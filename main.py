@@ -56,14 +56,20 @@ def log(msg):
 
 def main():
     root = Path(__file__).resolve().parent
-    load_dotenv(Path.cwd() / ".env", root / ".env", root.parent / ".env")
+    load_dotenv(root / ".env", Path.cwd() / ".env")
     cfg_path = Path(sys.argv[1]) if len(sys.argv) > 1 else root / "config.toml"
     if not cfg_path.is_file() and (root / "config.toml.example").is_file():
         cfg_path = root / "config.toml.example"
     cfg = tomllib.loads(cfg_path.read_text(encoding="utf-8"))
     rt = cfg["runtime"]
-    reg = Registry(rt["db_path"])
-    lib = ToolLibrary(rt["workspace"], rt.get("allow_python", False))
+    db_path = Path(rt["db_path"])
+    if not db_path.is_absolute():
+        db_path = root / db_path
+    ws_path = Path(rt["workspace"])
+    if not ws_path.is_absolute():
+        ws_path = root / ws_path
+    reg = Registry(db_path)
+    lib = ToolLibrary(ws_path, rt.get("allow_python", False))
     orch = Orchestrator(cfg, reg, lib, log)
 
     print("agent-hive ready. Type /help for commands.")
