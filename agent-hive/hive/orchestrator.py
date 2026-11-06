@@ -103,12 +103,16 @@ class Orchestrator:
             return run_loop(url, model, list(messages), handlers,
                             rt["max_steps"], self.log, label, api_key=key)
         except LLMError as e:
-            fb = self.cfg["workers"].get("fallback_endpoint")
-            if not fb or fb == endpoint or label == "orchestrator":
+            w = self.cfg["workers"]
+            fb = w.get("fallback_endpoint", "")
+            use_fb = w.get("use_local_fallback", False)
+            if not use_fb or not fb or fb == endpoint or label.startswith("orchestrator"):
                 raise
-            self.log(f"[{label}] {endpoint} failed ({e}); retrying on {fb}")
+            fb_model = w.get("fallback_model") or model
+            fb_model, fb = self.resolve_model(fb_model, fb)
+            self.log(f"[{label}] {endpoint} failed ({e}); retrying on {fb} ({fb_model})")
             fb_url, fb_key = self._endpoint(fb)
-            return run_loop(fb_url, model, list(messages), handlers,
+            return run_loop(fb_url, fb_model, list(messages), handlers,
                             rt["max_steps"], self.log, label, api_key=fb_key)
 
     # --- user entry point ---------------------------------------------------

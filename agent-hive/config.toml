@@ -1,15 +1,8 @@
 # agent-hive configuration
 
-# Each endpoint is an OpenAI-compatible API server (DeepSeek API, Ollama, vLLM, etc.).
 [endpoints.deepseek]
 base_url = "https://api.deepseek.com"
 api_key_env = "DEEPSEEK_API_KEY"                # loaded from .env or environment
-
-[endpoints.desktop]
-base_url = "http://localhost:11434/v1"          # optional local Ollama server
-
-[endpoints.laptop]
-base_url = "http://192.168.1.4:11434/v1"       # optional LAN Ollama server
 
 # Friendly model aliases you or the orchestrator can use anywhere a model is specified
 [models]
@@ -18,8 +11,6 @@ v3 = "deepseek-chat"                            # DeepSeek V3 chat model
 r1 = "deepseek-reasoner"                        # DeepSeek R1 reasoning model
 chat = "deepseek-chat"
 reasoner = "deepseek-reasoner"
-local_8b = "desktop/qwen3:8b"
-local_4b = "laptop/qwen3:4b"
 
 [orchestrator]
 endpoint = "deepseek"
@@ -28,7 +19,9 @@ model = "v4"                # e.g. "v4" (deepseek-chat), "r1" (deepseek-reasoner
 [workers]
 endpoint = "deepseek"       # default endpoint for new child agents
 model = "r1"                # e.g. "r1" (deepseek-reasoner) for child agents, or "v4" (deepseek-chat)
-fallback_endpoint = "desktop"   # optional fallback if primary endpoint is unreachable
+use_local_fallback = false  # set to true to fall back to a local server if primary endpoint fails
+fallback_endpoint = ""      # endpoint name to use when use_local_fallback = true
+fallback_model = ""         # optional model override when falling back (defaults to worker model)
 
 [runtime]
 max_steps = 8               # tool-call steps per task before the agent must answer

@@ -1,0 +1,31 @@
+# agent-hive configuration
+
+[endpoints.deepseek]
+base_url = "https://api.deepseek.com"
+api_key_env = "DEEPSEEK_API_KEY"                # loaded from .env or environment
+
+# Friendly model aliases you or the orchestrator can use anywhere a model is specified
+[models]
+v4 = "deepseek-chat"                            # DeepSeek V4 / latest flagship chat model
+v3 = "deepseek-chat"                            # DeepSeek V3 chat model
+r1 = "deepseek-reasoner"                        # DeepSeek R1 reasoning model
+chat = "deepseek-chat"
+reasoner = "deepseek-reasoner"
+
+[orchestrator]
+endpoint = "deepseek"
+model = "v4"                # e.g. "v4" (deepseek-chat), "r1" (deepseek-reasoner), or any model ID
+
+[workers]
+endpoint = "deepseek"       # default endpoint for new child agents
+model = "r1"                # e.g. "r1" (deepseek-reasoner) for child agents, or "v4" (deepseek-chat)
+use_local_fallback = false  # set to true to fall back to a local server if primary endpoint fails
+fallback_endpoint = ""      # endpoint name to use when use_local_fallback = true
+fallback_model = ""         # optional model override when falling back (defaults to worker model)
+
+[runtime]
+max_steps = 8               # tool-call steps per task before the agent must answer
+workspace = "workspace"     # sandbox folder for agents' file tools
+db_path = "agents.db"
+allow_python = false        # enables run_python tool; NOT a real sandbox, see README
+history_turns = 6           # orchestrator remembers this many recent exchanges

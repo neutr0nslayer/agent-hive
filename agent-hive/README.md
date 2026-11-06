@@ -16,13 +16,14 @@ you ──► orchestrator (e.g. DeepSeek V4 / deepseek-chat)
 
 ## Quick Start (DeepSeek API)
 
-1. **Configure your API key**
-
-   Copy `.env.example` to `.env` and add your DeepSeek API key:
+1. **Copy the example config and environment files**
 
    ```bash
+   cp config.toml.example config.toml
    cp .env.example .env
    ```
+
+2. **Configure your API key**
 
    Edit `.env`:
 
@@ -30,7 +31,7 @@ you ──► orchestrator (e.g. DeepSeek V4 / deepseek-chat)
    DEEPSEEK_API_KEY=sk-your-deepseek-api-key
    ```
 
-2. **Run**
+3. **Run**
 
    ```bash
    python main.py
@@ -49,7 +50,6 @@ api_key_env = "DEEPSEEK_API_KEY"
 v4 = "deepseek-chat"            # DeepSeek V4 / flagship chat
 v3 = "deepseek-chat"            # DeepSeek V3 chat
 r1 = "deepseek-reasoner"        # DeepSeek R1 reasoning model
-local_8b = "desktop/qwen3:8b"   # endpoint/model shorthand
 
 [orchestrator]
 endpoint = "deepseek"
@@ -58,7 +58,9 @@ model = "v4"                    # Orchestrator runs DeepSeek V4 (deepseek-chat)
 [workers]
 endpoint = "deepseek"
 model = "r1"                    # Child agents default to DeepSeek R1 (deepseek-reasoner)
-fallback_endpoint = "desktop"
+use_local_fallback = false      # Set to true to enable local fallback if primary endpoint fails
+fallback_endpoint = ""
+fallback_model = ""
 ```
 
 ### Switching Models Live in the CLI
@@ -121,7 +123,7 @@ container or VM, e.g. run `agent-hive` in Docker with only the workspace mounted
 | File | Purpose |
 |---|---|
 | `main.py` | CLI and `.env` loader |
-| `config.toml` | endpoints, models, runtime limits |
+| `config.toml.example` | template for endpoints, models, and runtime limits (copy to `config.toml`) |
 | `.env.example` | template for environment variables (`DEEPSEEK_API_KEY`) |
 | `hive/orchestrator.py` | manager agent, its tools, and endpoint fallback |
 | `hive/runner.py` | tool-use loop, schema validation, step cap |

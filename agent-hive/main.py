@@ -28,6 +28,9 @@ Anything else goes to the orchestrator."""
 DIM, RESET = "\033[2m", "\033[0m"
 
 
+PLACEHOLDERS = {"your_deepseek_api_key_here", "sk-your-deepseek-api-key", ""}
+
+
 def load_dotenv(*paths):
     """Load key=value pairs from .env files into os.environ (stdlib only)."""
     for p in paths:
@@ -41,7 +44,9 @@ def load_dotenv(*paths):
             k, _, v = line.partition("=")
             k = k.strip()
             v = v.strip().strip("'").strip('"')
-            if k and k not in os.environ:
+            if not k or v in PLACEHOLDERS:
+                continue
+            if k not in os.environ or os.environ[k] in PLACEHOLDERS:
                 os.environ[k] = v
 
 
@@ -51,8 +56,10 @@ def log(msg):
 
 def main():
     root = Path(__file__).resolve().parent
-    load_dotenv(root / ".env", Path.cwd() / ".env")
+    load_dotenv(Path.cwd() / ".env", root / ".env", root.parent / ".env")
     cfg_path = Path(sys.argv[1]) if len(sys.argv) > 1 else root / "config.toml"
+    if not cfg_path.is_file() and (root / "config.toml.example").is_file():
+        cfg_path = root / "config.toml.example"
     cfg = tomllib.loads(cfg_path.read_text(encoding="utf-8"))
     rt = cfg["runtime"]
     reg = Registry(rt["db_path"])

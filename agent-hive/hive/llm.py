@@ -12,6 +12,9 @@ class LLMError(Exception):
     """Endpoint unreachable or returned something unusable."""
 
 
+PLACEHOLDERS = {"your_deepseek_api_key_here", "sk-your-deepseek-api-key", ""}
+
+
 def resolve_api_key(endpoint_cfg):
     """Resolve API key from endpoint config, environment variable, or default."""
     if not isinstance(endpoint_cfg, dict):
@@ -20,16 +23,16 @@ def resolve_api_key(endpoint_cfg):
         val = str(endpoint_cfg["api_key"]).strip()
         if val.startswith("${") and val.endswith("}"):
             env_name = val[2:-1].strip()
-            val = os.environ.get(env_name, "")
-            if not val:
-                raise LLMError(f"missing environment variable '{env_name}' (set it in .env)")
+            val = os.environ.get(env_name, "").strip()
+            if val in PLACEHOLDERS:
+                raise LLMError(f"missing or placeholder '{env_name}' — set your real DeepSeek API key in .env")
             return val
         return val
     env_name = endpoint_cfg.get("api_key_env")
     if env_name:
         val = os.environ.get(env_name, "").strip()
-        if not val:
-            raise LLMError(f"missing environment variable '{env_name}' (set it in .env)")
+        if val in PLACEHOLDERS:
+            raise LLMError(f"missing or placeholder '{env_name}' — set your real DeepSeek API key in .env")
         return val
     return "local"
 

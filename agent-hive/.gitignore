@@ -1,7 +1,9 @@
-# Secrets & Environment
+# Secrets & Local Config
 .env
 *.env
 !.env.example
+config.toml
+!config.toml.example
 
 # Runtime state & sandbox
 agents.db
@@ -23,4 +25,3 @@ env/
 .idea/
 .DS_Store
 Thumbs.db
-
