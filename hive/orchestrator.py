@@ -1,12 +1,14 @@
 """The manager agent: creates worker agents and assigns them tasks."""
 import json
 import re
+import time
 
 from .llm import LLMError, resolve_api_key
 from .registry import AgentSpec
 from .runner import run_loop
 
 NAME_RE = re.compile(r"^[a-z][a-z0-9_]{1,39}$")
+SLUG_RE = re.compile(r"[^a-z0-9]+")
 
 ORCHESTRATOR_PROMPT = """You are the orchestrator of a team of AI agents.
 You do not do the work yourself. You manage agents:
@@ -115,6 +117,28 @@ class Orchestrator:
             return run_loop(fb_url, fb_model, list(messages), handlers,
                             rt["max_steps"], self.log, label, api_key=fb_key)
 
+    def _save_output_md(self, agent_name, model, endpoint, prompt_text, result_text, task_id=None):
+        """Save every agent/orchestrator output to workspace/output/<agent-name>/*.md."""
+        out_dir = self.lib.ws / "output" / agent_name
+        out_dir.mkdir(parents=True, exist_ok=True)
+        ts = time.strftime("%Y%m%d_%H%M%S")
+        slug = SLUG_RE.sub("_", prompt_text.lower()).strip("_")[:36] or "output"
+        prefix = f"task_{task_id}_{ts}" if task_id is not None else f"{ts}"
+        filename = f"{prefix}_{slug}.md"
+        path = out_dir / filename
+        header = (
+            f"# Output — `{agent_name}`\n\n"
+            f"- **Model**: `{model}` (`{endpoint}`)\n"
+            f"- **Timestamp**: {time.strftime('%Y-%m-%d %H:%M:%S')}\n"
+        )
+        if task_id is not None:
+            header += f"- **Task ID**: #{task_id}\n"
+        body = f"{header}\n## Task / Prompt\n\n{prompt_text}\n\n## Result\n\n{result_text}\n"
+        path.write_text(body, encoding="utf-8")
+        rel = path.relative_to(self.lib.ws).as_posix()
+        self.log(f"[{agent_name}] saved → workspace/{rel}")
+        return rel
+
     # --- user entry point ---------------------------------------------------
     def handle(self, user_text):
         oc = self.cfg["orchestrator"]
@@ -133,6 +157,7 @@ class Orchestrator:
         msgs.append({"role": "user", "content": user_text})
         oc_model, oc_ep = self.resolve_model(oc["model"], oc["endpoint"])
         answer = self._run(oc_ep, oc_model, msgs, self.meta, f"orchestrator:{oc_model}")
+        self._save_output_md("orchestrator", oc_model, oc_ep, user_text, answer)
         self.history.append((user_text, answer))
         self.history = self.history[-self.cfg["runtime"]["history_turns"]:]
         return answer
@@ -154,7 +179,8 @@ class Orchestrator:
             self.reg.finish_task(tid, "failed", str(e))
             return f"ERROR: task #{tid} failed: {e}"
         self.reg.finish_task(tid, "done", result)
-        return f"[task #{tid} done ({model} @ {ep})]\n{result}"
+        saved_rel = self._save_output_md(name, model, ep, task, result, task_id=tid)
+        return f"[task #{tid} done ({model} @ {ep}) | saved: {saved_rel}]\n{result}"
 
     # --- orchestrator tools --------------------------------------------------
     def t_list_agents(self):
