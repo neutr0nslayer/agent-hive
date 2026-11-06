@@ -53,6 +53,8 @@ class H(BaseHTTPRequestHandler):
     def do_POST(self):
         body = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
         sys_prompt = body["messages"][0].get("content", "") if body.get("messages") else ""
+        if isinstance(sys_prompt, list):
+            sys_prompt = " ".join(p.get("text", "") for p in sys_prompt if isinstance(p, dict))
         is_orch = "You are the orchestrator" in sys_prompt or body["model"] == "qwen3:8b"
         msg = orchestrator(body["messages"]) if is_orch else worker(body["messages"])
         out = json.dumps({"choices": [{"message": msg}]}).encode()

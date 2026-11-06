@@ -1,4 +1,4 @@
-"""Minimal client for OpenAI-compatible chat APIs (DeepSeek, Ollama, vLLM). Stdlib only."""
+"""Minimal client for OpenAI-compatible chat APIs (DeepSeek, Ollama, vLLM, OpenAI). Stdlib only."""
 import json
 import os
 import re
@@ -39,10 +39,12 @@ def chat(base_url, model, messages, tools=None, temperature=0.2, timeout=600, ap
 
     tool_calls: list of {"id", "name", "arguments"(json str)}.
     native: False when calls were recovered from plain text (small models do this).
-    reasoning_content: optional reasoning string returned by thinking models (e.g. deepseek-reasoner).
+    reasoning_content: optional reasoning string returned by thinking models (e.g. deepseek-reasoner / R1).
     """
-    payload = {"model": model, "messages": messages,
-               "temperature": temperature, "stream": False}
+    payload = {"model": model, "messages": messages, "stream": False}
+    # DeepSeek R1 / reasoner models ignore or reject temperature when reasoning
+    if "reasoner" not in model.lower() and "-r1" not in model.lower():
+        payload["temperature"] = temperature
     if tools:
         payload["tools"] = tools
     req = urllib.request.Request(

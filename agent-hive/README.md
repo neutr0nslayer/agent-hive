@@ -1,14 +1,14 @@
 # agent-hive
 
-A lightweight orchestrator agent that creates worker agents and assigns them tasks on request.
-Supports the **DeepSeek API** (`deepseek-chat`, `deepseek-reasoner`) out of the box, as well as local OpenAI-compatible servers (Ollama, vLLM).
+A lightweight multi-model orchestrator agent that creates worker (child) agents and assigns them tasks on request.
+Mix and match models freely — for example, run **DeepSeek V4** (`deepseek-chat`) as your orchestrator and **DeepSeek R1** (`deepseek-reasoner`) for your child agents (or vice-versa, or mix with local Ollama models).
 Pure Python 3.11+ standard library — zero `pip` dependencies.
 
 ```
-you ──► orchestrator (deepseek-chat / deepseek-reasoner / local Ollama)
+you ──► orchestrator (e.g. DeepSeek V4 / deepseek-chat)
             │  list_agents / create_agent / assign_task / recent_tasks
             ▼
-        worker agents (deepseek-chat or local Ollama, with optional fallback)
+        child agents (e.g. DeepSeek R1 / deepseek-reasoner, or per-agent custom models)
             │  web_fetch / read_file / write_file / list_files / [run_python]
             ▼
         workspace/  (sandbox folder)       agents.db  (agent specs + task history)
@@ -36,31 +36,46 @@ you ──► orchestrator (deepseek-chat / deepseek-reasoner / local Ollama)
    python main.py
    ```
 
-## Optional: Using Local Models (Ollama / vLLM)
+## Multi-Model Configuration (Orchestrator vs. Child Agents)
 
-You can mix and match DeepSeek API with local Ollama endpoints (for example, DeepSeek as orchestrator and a local model for workers, or vice versa) by editing `config.toml`:
+In `config.toml`, you can set different models for the `[orchestrator]` and `[workers]` (child agents), and define friendly aliases under `[models]`:
 
 ```toml
 [endpoints.deepseek]
 base_url = "https://api.deepseek.com"
 api_key_env = "DEEPSEEK_API_KEY"
 
-[endpoints.desktop]
-base_url = "http://localhost:11434/v1"
+[models]
+v4 = "deepseek-chat"            # DeepSeek V4 / flagship chat
+v3 = "deepseek-chat"            # DeepSeek V3 chat
+r1 = "deepseek-reasoner"        # DeepSeek R1 reasoning model
+local_8b = "desktop/qwen3:8b"   # endpoint/model shorthand
 
 [orchestrator]
 endpoint = "deepseek"
-model = "deepseek-chat"     # or "deepseek-reasoner"
+model = "v4"                    # Orchestrator runs DeepSeek V4 (deepseek-chat)
 
 [workers]
 endpoint = "deepseek"
-model = "deepseek-chat"
+model = "r1"                    # Child agents default to DeepSeek R1 (deepseek-reasoner)
 fallback_endpoint = "desktop"
 ```
 
-If using Ollama locally, set an 8k+ context window before serving:
-```bash
-OLLAMA_CONTEXT_LENGTH=8192 ollama serve
+### Switching Models Live in the CLI
+
+You can inspect or change models at any time without restarting using `/model`:
+
+```
+you> /model                        # show current orchestrator, default worker, and per-agent models
+you> /model orch v4                # set orchestrator to v4 (deepseek-chat)
+you> /model workers r1             # set default model for new child agents to r1 (deepseek-reasoner)
+you> /model math_solver r1         # switch a specific child agent to r1
+you> /model fast_writer v4         # switch a specific child agent to v4
+```
+
+You can also ask the orchestrator in plain English:
+```
+you> create a child agent called math_coder using model r1 and have it solve ...
 ```
 
 ## Using it
@@ -68,6 +83,7 @@ OLLAMA_CONTEXT_LENGTH=8192 ollama serve
 ```
 you> create an agent that summarizes web pages, then summarize https://example.com into notes/example.md
 you> /agents
+you> /model
 you> /run web_summarizer summarize https://news.ycombinator.com into notes/hn.md
 you> /tasks
 ```

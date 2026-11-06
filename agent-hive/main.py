@@ -11,14 +11,18 @@ from hive.registry import Registry
 from hive.tools import ToolLibrary
 
 HELP = """Commands:
-  /agents            list agents
-  /show NAME         show an agent's full spec
-  /run NAME TASK     give a task straight to an agent (skips the orchestrator)
-  /delete NAME       delete an agent
-  /tasks             recent tasks
-  /reset             clear the orchestrator's conversation memory
-  /help              this help
-  /quit              exit
+  /agents                   list agents
+  /show NAME                show an agent's full spec
+  /run NAME TASK            give a task straight to an agent (skips the orchestrator)
+  /model                    show current orchestrator, default worker, and agent models
+  /model orch MODEL [EP]    switch the orchestrator model (e.g. /model orch v4, /model orch r1)
+  /model workers MODEL [EP] switch the default model for new child agents (e.g. /model workers r1)
+  /model AGENT MODEL [EP]   switch an existing child agent's model (e.g. /model coder r1)
+  /delete NAME              delete an agent
+  /tasks                    recent tasks
+  /reset                    clear the orchestrator's conversation memory
+  /help                     this help
+  /quit                     exit
 Anything else goes to the orchestrator."""
 
 DIM, RESET = "\033[2m", "\033[0m"
@@ -83,6 +87,46 @@ def main():
                     print("Usage: /run NAME TASK")
                 else:
                     print(orch.run_worker(name, task))
+            elif cmd == "/model":
+                parts = rest.strip().split()
+                if not parts:
+                    oc = cfg["orchestrator"]
+                    w = cfg["workers"]
+                    om, oep = orch.resolve_model(oc["model"], oc["endpoint"])
+                    wm, wep = orch.resolve_model(w["model"], w["endpoint"])
+                    print(f"Orchestrator : {oc['model']} -> {om} @ {oep}")
+                    print(f"Workers (def): {w['model']} -> {wm} @ {wep}")
+                    aliases = cfg.get("models", {})
+                    if aliases:
+                        print("Aliases      : " + ", ".join(f"{k}={v}" for k, v in aliases.items()))
+                    for a in reg.list_agents():
+                        print(f"Agent {a.name:<12}: {a.model} @ {a.endpoint}")
+                elif len(parts) >= 2:
+                    target, new_m = parts[0], parts[1]
+                    new_ep = parts[2] if len(parts) > 2 else None
+                    rm, rep = orch.resolve_model(new_m, new_ep)
+                    if target in ("orch", "orchestrator"):
+                        cfg["orchestrator"]["model"] = rm
+                        if rep:
+                            cfg["orchestrator"]["endpoint"] = rep
+                        print(f"Orchestrator set to {rm} @ {cfg['orchestrator']['endpoint']}")
+                    elif target in ("workers", "worker", "child", "children"):
+                        cfg["workers"]["model"] = rm
+                        if rep:
+                            cfg["workers"]["endpoint"] = rep
+                        print(f"Default worker set to {rm} @ {cfg['workers']['endpoint']}")
+                    else:
+                        a = reg.get_agent(target)
+                        if not a:
+                            print(f"No agent named '{target}'.")
+                        else:
+                            a.model = rm
+                            if rep:
+                                a.endpoint = rep
+                            reg.save_agent(a)
+                            print(f"Agent '{a.name}' set to {a.model} @ {a.endpoint}")
+                else:
+                    print("Usage: /model [orch|workers|AGENT_NAME] MODEL [ENDPOINT]")
             elif cmd == "/delete":
                 print("Deleted." if reg.delete_agent(rest.strip()) else "No such agent.")
             elif cmd == "/tasks":
