@@ -1,0 +1,28 @@
+# agent-hive configuration
+
+# Each endpoint is an OpenAI-compatible API server (DeepSeek API, Ollama, vLLM, etc.).
+[endpoints.deepseek]
+base_url = "https://api.deepseek.com"
+api_key_env = "DEEPSEEK_API_KEY"                # loaded from .env or environment
+
+[endpoints.desktop]
+base_url = "http://localhost:11434/v1"          # optional local Ollama server
+
+[endpoints.laptop]
+base_url = "http://192.168.1.4:11434/v1"       # optional LAN Ollama server
+
+[orchestrator]
+endpoint = "deepseek"
+model = "deepseek-chat"     # or "deepseek-reasoner"
+
+[workers]
+endpoint = "deepseek"       # default endpoint for new agents
+model = "deepseek-chat"
+fallback_endpoint = "desktop"   # optional fallback if primary endpoint is unreachable
+
+[runtime]
+max_steps = 8               # tool-call steps per task before the agent must answer
+workspace = "workspace"     # sandbox folder for agents' file tools
+db_path = "agents.db"
+allow_python = false        # enables run_python tool; NOT a real sandbox, see README
+history_turns = 6           # orchestrator remembers this many recent exchanges

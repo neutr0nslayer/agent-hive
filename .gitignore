@@ -1,0 +1,26 @@
+# Secrets & Environment
+.env
+*.env
+!.env.example
+
+# Runtime state & sandbox
+agents.db
+agents.db-journal
+agents.db-wal
+workspace/
+
+# Python bytecode & environments
+__pycache__/
+*.py[cod]
+*$py.class
+.venv/
+venv/
+env/
+.pytest_cache/
+
+# IDE & OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
