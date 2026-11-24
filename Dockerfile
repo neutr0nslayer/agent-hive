@@ -9,6 +9,9 @@ ENV PYTHONUNBUFFERED=1 \
 
 WORKDIR /app
 
+COPY requirements.txt ./
+RUN pip install --no-cache-dir -r requirements.txt
+
 # Create a non-root user and persistent data/workspace directories
 RUN adduser --disabled-password --gecos "" --uid 1000 hive \
     && mkdir -p /data/workspace \
@@ -26,5 +29,5 @@ EXPOSE 8000
 HEALTHCHECK --interval=30s --timeout=5s --start-period=5s --retries=3 \
     CMD python -c "import os, urllib.request; urllib.request.urlopen(f'http://127.0.0.1:{os.environ.get(\"HIVE_PORT\", \"8000\")}/health', timeout=3)"
 
-# Default: HTTP API server for deployments; override with `python main.py` for interactive CLI
+# Default: FastAPI server + API docs dashboard; override with `python main.py` for CLI
 CMD ["python", "main.py", "--serve"]

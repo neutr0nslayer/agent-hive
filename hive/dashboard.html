@@ -1,0 +1,551 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>agent-hive — API Dashboard & Key Distribution</title>
+  <style>
+    :root {
+      --bg: #0b0f17;
+      --surface: #131a27;
+      --surface-2: #1a2335;
+      --border: #263248;
+      --text: #e5ecf6;
+      --muted: #93a3bc;
+      --accent: #60a5fa;
+      --accent-2: #818cf8;
+      --green: #34d399;
+      --amber: #fbbf24;
+      --red: #f87171;
+      --mono: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+      --sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0; font-family: var(--sans); background: var(--bg); color: var(--text);
+      line-height: 1.5;
+    }
+    header {
+      border-bottom: 1px solid var(--border); background: rgba(19,26,39,.9);
+      backdrop-filter: blur(8px); position: sticky; top: 0; z-index: 20;
+    }
+    .wrap { max-width: 1200px; margin: 0 auto; padding: 16px 20px; }
+    .topbar { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 12px; }
+    .brand { display: flex; align-items: center; gap: 10px; font-weight: 700; font-size: 1.15rem; }
+    .badge {
+      font-size: 0.72rem; padding: 2px 8px; border-radius: 999px; font-weight: 600;
+      border: 1px solid var(--border); background: var(--surface-2); color: var(--muted);
+    }
+    .badge.ok { color: var(--green); border-color: rgba(52,211,153,.35); background: rgba(52,211,153,.08); }
+    .badge.warn { color: var(--amber); border-color: rgba(251,191,36,.35); background: rgba(251,191,36,.08); }
+    .badge.err { color: var(--red); border-color: rgba(248,113,113,.35); background: rgba(248,113,113,.08); }
+    .nav { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+    .nav a, button {
+      font-family: inherit; font-size: 0.85rem; padding: 7px 12px; border-radius: 8px;
+      border: 1px solid var(--border); background: var(--surface-2); color: var(--text);
+      text-decoration: none; cursor: pointer; transition: .15s border-color, .15s background;
+    }
+    .nav a:hover, button:hover { border-color: var(--accent); background: #202c42; }
+    button.primary {
+      background: linear-gradient(135deg, #2563eb, #4f46e5); border-color: transparent; font-weight: 600;
+    }
+    button.primary:hover { filter: brightness(1.1); }
+    button.danger { color: var(--red); border-color: rgba(248,113,113,.35); }
+    button.danger:hover { background: rgba(248,113,113,.12); border-color: var(--red); }
+    button.sm { padding: 4px 9px; font-size: 0.78rem; }
+
+    .grid-4 { display: grid; grid-template-columns: repeat(auto-fit, minmax(210px, 1fr)); gap: 14px; margin: 18px 0; }
+    .card {
+      background: var(--surface); border: 1px solid var(--border); border-radius: 12px; padding: 18px;
+    }
+    .stat-label { color: var(--muted); font-size: 0.8rem; text-transform: uppercase; letter-spacing: .04em; }
+    .stat-value { font-size: 1.6rem; font-weight: 700; margin-top: 4px; }
+    .stat-sub { color: var(--muted); font-size: 0.8rem; margin-top: 2px; font-family: var(--mono); }
+
+    .tabs { display: flex; gap: 6px; border-bottom: 1px solid var(--border); margin: 22px 0 18px; }
+    .tab {
+      padding: 10px 16px; border: none; border-bottom: 2px solid transparent; border-radius: 0;
+      background: transparent; color: var(--muted); font-weight: 600;
+    }
+    .tab.active { color: var(--accent); border-bottom-color: var(--accent); }
+    .panel { display: none; }
+    .panel.active { display: block; }
+
+    .auth-bar {
+      display: flex; flex-wrap: wrap; gap: 10px; align-items: center;
+      background: var(--surface); border: 1px solid var(--border); border-radius: 10px; padding: 12px 14px;
+    }
+    input, select, textarea {
+      background: var(--bg); color: var(--text); border: 1px solid var(--border);
+      border-radius: 8px; padding: 8px 10px; font-family: inherit; font-size: 0.88rem;
+    }
+    input:focus, select:focus, textarea:focus { outline: none; border-color: var(--accent); }
+    textarea { font-family: var(--mono); width: 100%; resize: vertical; }
+    .grow { flex: 1; min-width: 220px; }
+
+    .row { display: flex; flex-wrap: wrap; gap: 12px; align-items: end; }
+    label { display: flex; flex-direction: column; gap: 5px; font-size: 0.82rem; color: var(--muted); }
+    .checks { display: flex; gap: 12px; align-items: center; padding: 8px 0; }
+    .checks label { flex-direction: row; align-items: center; color: var(--text); cursor: pointer; }
+
+    table { width: 100%; border-collapse: collapse; font-size: 0.86rem; }
+    th, td { text-align: left; padding: 10px 8px; border-bottom: 1px solid var(--border); vertical-align: middle; }
+    th { color: var(--muted); font-weight: 600; font-size: 0.78rem; text-transform: uppercase; }
+    code, pre { font-family: var(--mono); }
+    pre {
+      background: var(--bg); border: 1px solid var(--border); border-radius: 8px;
+      padding: 12px; overflow-x: auto; font-size: 0.82rem; margin: 8px 0;
+    }
+
+    .ep-group { margin-bottom: 20px; }
+    .ep-group h3 { margin: 0 0 10px; font-size: 0.95rem; color: var(--accent); }
+    .ep {
+      display: grid; grid-template-columns: 74px 240px 1fr auto; gap: 10px; align-items: center;
+      padding: 10px 12px; border: 1px solid var(--border); border-radius: 9px; margin-bottom: 8px;
+      background: var(--surface-2);
+    }
+    @media (max-width: 780px) { .ep { grid-template-columns: 1fr; } }
+    .method {
+      font-family: var(--mono); font-size: 0.75rem; font-weight: 700; text-align: center;
+      padding: 3px 6px; border-radius: 6px;
+    }
+    .GET { background: rgba(96,165,250,.15); color: #60a5fa; }
+    .POST { background: rgba(52,211,153,.15); color: #34d399; }
+    .PUT, .PATCH { background: rgba(251,191,36,.15); color: #fbbf24; }
+    .DELETE { background: rgba(248,113,113,.15); color: #f87171; }
+
+    .dist-box {
+      border: 1px solid rgba(52,211,153,.45); background: rgba(52,211,153,.06);
+      border-radius: 12px; padding: 16px; margin-top: 16px; display: none;
+    }
+    .dist-box.show { display: block; }
+    .snippet-tabs { display: flex; gap: 6px; margin-top: 10px; flex-wrap: wrap; }
+    .toast {
+      position: fixed; bottom: 20px; right: 20px; background: #1e293b; color: var(--text);
+      border: 1px solid var(--accent); padding: 10px 16px; border-radius: 10px;
+      display: none; z-index: 50; box-shadow: 0 10px 30px rgba(0,0,0,.45);
+    }
+  </style>
+</head>
+<body>
+<header>
+  <div class="wrap topbar">
+    <div class="brand">
+      <span>agent-hive</span>
+      <span id="healthBadge" class="badge">checking…</span>
+      <span id="authBadge" class="badge">auth</span>
+    </div>
+    <div class="nav">
+      <a href="/docs" target="_blank">Swagger UI</a>
+      <a href="/redoc" target="_blank">ReDoc</a>
+      <a href="/openapi.json" target="_blank">OpenAPI JSON</a>
+      <button onclick="refreshAll()">Refresh</button>
+    </div>
+  </div>
+</header>
+
+<main class="wrap">
+  <div class="auth-bar">
+    <strong style="font-size:.86rem;">Admin / API Key:</strong>
+    <input id="apiToken" type="password" class="grow" placeholder="Paste HIVE_API_TOKEN or generated hive_sk_... key (saved in sessionStorage)" />
+    <button onclick="saveToken()">Use Key</button>
+    <button onclick="clearToken()">Clear</button>
+  </div>
+
+  <div class="grid-4">
+    <div class="card">
+      <div class="stat-label">Orchestrator Model</div>
+      <div class="stat-value" id="statOrch" style="font-size:1.05rem;font-family:var(--mono)">—</div>
+      <div class="stat-sub" id="statWorker">workers: —</div>
+    </div>
+    <div class="card">
+      <div class="stat-label">Worker Agents</div>
+      <div class="stat-value" id="statAgents">—</div>
+      <div class="stat-sub" id="statTools">tools: —</div>
+    </div>
+    <div class="card">
+      <div class="stat-label">Tasks Recorded</div>
+      <div class="stat-value" id="statTasks">—</div>
+      <div class="stat-sub" id="statUptime">uptime: —</div>
+    </div>
+    <div class="card">
+      <div class="stat-label">API Keys</div>
+      <div class="stat-value" id="statKeys">—</div>
+      <div class="stat-sub" id="statAuthMode">mode: —</div>
+    </div>
+  </div>
+
+  <div class="tabs">
+    <button class="tab active" onclick="showTab('docs', this)">API Documentation</button>
+    <button class="tab" onclick="showTab('keys', this)">Key Generator &amp; Distribution</button>
+    <button class="tab" onclick="showTab('playground', this)">Live Playground</button>
+  </div>
+
+  <!-- TAB 1: API DOCUMENTATION -->
+  <section id="tab-docs" class="panel active">
+    <div class="card" style="margin-bottom:16px;">
+      <h2 style="margin:0 0 6px;font-size:1.05rem;">Authentication &amp; Base URL</h2>
+      <p style="margin:0 0 10px;color:var(--muted);font-size:.9rem;">
+        Pass an API key via <code>Authorization: Bearer &lt;key&gt;</code> or <code>X-API-Key: &lt;key&gt;</code>.
+        Scopes: <code>read</code> (GET), <code>write</code> (chat, agents create/update, run, workspace write), <code>admin</code> (keys, delete, model switch).
+      </p>
+      <div class="row">
+        <code id="baseUrlCode" style="background:var(--bg);padding:8px 12px;border-radius:8px;border:1px solid var(--border);"></code>
+        <button class="sm" onclick="copyText(location.origin, 'Base URL copied')">Copy Base URL</button>
+        <button class="sm" onclick="copyText(location.origin + '/openapi.json', 'OpenAPI URL copied')">Copy OpenAPI URL</button>
+      </div>
+    </div>
+    <div id="endpointsContainer" class="card">Loading OpenAPI schema…</div>
+  </section>
+
+  <!-- TAB 2: KEY GENERATOR & DISTRIBUTION -->
+  <section id="tab-keys" class="panel">
+    <div class="card" style="margin-bottom:16px;">
+      <h2 style="margin:0 0 12px;font-size:1.05rem;">Generate &amp; Distribute New API Key</h2>
+      <div class="row">
+        <label style="flex:1;min-width:200px;">
+          Client / Label
+          <input id="keyName" placeholder="e.g. mobile-app, partner-team, ci-bot" />
+        </label>
+        <label style="width:170px;">
+          Expires In (days)
+          <input id="keyDays" type="number" min="1" placeholder="Never (blank)" />
+        </label>
+        <label>
+          Scopes
+          <div class="checks">
+            <label><input type="checkbox" id="scRead" checked /> read</label>
+            <label><input type="checkbox" id="scWrite" checked /> write</label>
+            <label><input type="checkbox" id="scAdmin" /> admin</label>
+          </div>
+        </label>
+        <button class="primary" onclick="generateKey()">Generate API Key</button>
+      </div>
+
+      <div id="distBox" class="dist-box">
+        <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px;">
+          <strong style="color:var(--green);">New API Key Ready — Copy &amp; Distribute Now (shown once)</strong>
+          <div style="display:flex;gap:8px;flex-wrap:wrap;">
+            <button class="sm primary" onclick="copyCurrentKey()">Copy Key</button>
+            <button class="sm" onclick="copySnippet('markdown')">Copy Shareable Invite (MD)</button>
+            <button class="sm" onclick="downloadKit()">Download Client Kit (.json)</button>
+          </div>
+        </div>
+        <pre id="newKeyValue" style="color:var(--green);font-weight:700;"></pre>
+        <div class="snippet-tabs">
+          <button class="sm" onclick="selectSnippet('curl')">cURL</button>
+          <button class="sm" onclick="selectSnippet('python')">Python</button>
+          <button class="sm" onclick="selectSnippet('javascript')">JavaScript</button>
+          <button class="sm" onclick="selectSnippet('env')">.env</button>
+          <button class="sm" onclick="selectSnippet('markdown')">Shareable Markdown</button>
+          <button class="sm" onclick="copyActiveSnippet()">Copy Snippet</button>
+        </div>
+        <pre id="snippetBox"></pre>
+      </div>
+    </div>
+
+    <div class="card">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px;">
+        <h2 style="margin:0;font-size:1.05rem;">Issued API Keys</h2>
+        <button class="sm" onclick="loadKeys()">Reload Keys</button>
+      </div>
+      <div style="overflow-x:auto;">
+        <table>
+          <thead>
+            <tr>
+              <th>Label</th>
+              <th>Prefix</th>
+              <th>Scopes</th>
+              <th>Status</th>
+              <th>Requests</th>
+              <th>Expires</th>
+              <th>Actions</th>
+            </tr>
+          </thead>
+          <tbody id="keysBody">
+            <tr><td colspan="7" style="color:var(--muted);">Loading…</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+  </section>
+
+  <!-- TAB 3: LIVE PLAYGROUND -->
+  <section id="tab-playground" class="panel">
+    <div class="card">
+      <h2 style="margin:0 0 12px;font-size:1.05rem;">Live API Request Tester</h2>
+      <div class="row" style="margin-bottom:12px;">
+        <select id="pgMethod" style="width:110px;">
+          <option>GET</option><option>POST</option><option>PUT</option><option>PATCH</option><option>DELETE</option>
+        </select>
+        <input id="pgPath" class="grow" value="/api/v1/agents" />
+        <button class="primary" onclick="sendPlayground()">Send Request</button>
+      </div>
+      <label>
+        JSON Body (for POST / PUT / PATCH)
+        <textarea id="pgBody" rows="5">{}</textarea>
+      </label>
+      <div style="margin-top:12px;">
+        <div style="display:flex;justify-content:space-between;align-items:center;">
+          <span style="font-size:.82rem;color:var(--muted);">Response</span>
+          <span id="pgStatus" class="badge">idle</span>
+        </div>
+        <pre id="pgOut" style="min-height:140px;">Click "Send Request" or click "Try" on any endpoint in the Documentation tab.</pre>
+      </div>
+    </div>
+  </section>
+</main>
+
+<div id="toast" class="toast"></div>
+
+<script>
+  let currentDist = null;
+  let activeSnippet = 'curl';
+
+  const $ = (id) => document.getElementById(id);
+
+  function toast(msg) {
+    const t = $('toast');
+    t.textContent = msg;
+    t.style.display = 'block';
+    clearTimeout(t._timer);
+    t._timer = setTimeout(() => t.style.display = 'none', 2600);
+  }
+
+  function getToken() { return sessionStorage.getItem('hive_api_token') || ''; }
+  function saveToken() {
+    sessionStorage.setItem('hive_api_token', $('apiToken').value.trim());
+    toast('API key saved for this browser session');
+    refreshAll();
+  }
+  function clearToken() {
+    sessionStorage.removeItem('hive_api_token');
+    $('apiToken').value = '';
+    toast('API key cleared');
+    refreshAll();
+  }
+
+  function authHeaders(extra = {}) {
+    const h = { ...extra };
+    const tok = getToken();
+    if (tok) h['Authorization'] = 'Bearer ' + tok;
+    return h;
+  }
+
+  function showTab(name, btn) {
+    document.querySelectorAll('.panel').forEach(p => p.classList.remove('active'));
+    document.querySelectorAll('.tab').forEach(b => b.classList.remove('active'));
+    $('tab-' + name).classList.add('active');
+    if (btn) btn.classList.add('active');
+    if (name === 'keys') loadKeys();
+  }
+
+  async function copyText(text, msg = 'Copied') {
+    await navigator.clipboard.writeText(text);
+    toast(msg);
+  }
+
+  async function loadHealth() {
+    try {
+      const r = await fetch('/health');
+      const d = await r.json();
+      $('healthBadge').textContent = d.status === 'ok' ? 'healthy' : 'degraded';
+      $('healthBadge').className = 'badge ' + (d.status === 'ok' ? 'ok' : 'err');
+      $('authBadge').textContent = d.auth_enabled ? 'auth: protected' : 'auth: open';
+      $('authBadge').className = 'badge ' + (d.auth_enabled ? 'ok' : 'warn');
+      $('statOrch').textContent = d.models.orchestrator;
+      $('statWorker').textContent = 'workers: ' + d.models.workers_default;
+      $('statAgents').textContent = d.counts.agents;
+      $('statTools').textContent = 'tools: ' + d.counts.tools;
+      $('statTasks').textContent = d.counts.tasks;
+      $('statUptime').textContent = 'uptime: ' + Math.round(d.uptime_seconds) + 's';
+      $('statKeys').textContent = d.counts.api_keys;
+      $('statAuthMode').textContent = d.auth_enabled ? 'bearer / X-API-Key' : 'open (no keys yet)';
+    } catch (e) {
+      $('healthBadge').textContent = 'offline';
+      $('healthBadge').className = 'badge err';
+    }
+  }
+
+  async function loadOpenAPI() {
+    const r = await fetch('/openapi.json');
+    const spec = await r.json();
+    const groups = {};
+    for (const [path, methods] of Object.entries(spec.paths || {})) {
+      for (const [method, info] of Object.entries(methods)) {
+        const tag = (info.tags && info.tags[0]) || 'General';
+        (groups[tag] ||= []).push({ method: method.toUpperCase(), path, summary: info.summary || '' });
+      }
+    }
+    const container = $('endpointsContainer');
+    container.innerHTML = Object.entries(groups).map(([tag, eps]) => `
+      <div class="ep-group">
+        <h3>${tag}</h3>
+        ${eps.map(e => `
+          <div class="ep">
+            <span class="method ${e.method}">${e.method}</span>
+            <code>${e.path}</code>
+            <span style="color:var(--muted);font-size:.86rem;">${e.summary}</span>
+            <button class="sm" onclick="tryEndpoint('${e.method}', '${e.path}')">Try</button>
+          </div>
+        `).join('')}
+      </div>
+    `).join('');
+  }
+
+  function tryEndpoint(method, path) {
+    $('pgMethod').value = method;
+    $('pgPath').value = path;
+    const samples = {
+      '/api/v1/chat': { message: 'List your agents' },
+      '/api/v1/agents': { name: 'helper_bot', description: 'Helpful worker', system_prompt: 'You help users concisely.', tools: ['list_files'] },
+      '/api/v1/run': { agent: 'helper_bot', task: 'List files in the workspace' },
+      '/api/v1/models': { target: 'orch', model: 'v4' },
+      '/api/v1/keys': { name: 'demo-client', scopes: ['read', 'write'], expires_in_days: 30 },
+    };
+    $('pgBody').value = JSON.stringify(samples[path] || {}, null, 2);
+    const tabs = document.querySelectorAll('.tab');
+    showTab('playground', tabs[2]);
+  }
+
+  async function sendPlayground() {
+    const method = $('pgMethod').value;
+    const path = $('pgPath').value.trim();
+    const opts = { method, headers: authHeaders() };
+    if (['POST', 'PUT', 'PATCH'].includes(method)) {
+      opts.headers['Content-Type'] = 'application/json';
+      opts.body = $('pgBody').value;
+    }
+    $('pgStatus').textContent = 'sending…';
+    $('pgStatus').className = 'badge';
+    try {
+      const r = await fetch(path, opts);
+      const text = await r.text();
+      let pretty = text;
+      try { pretty = JSON.stringify(JSON.parse(text), null, 2); } catch {}
+      $('pgStatus').textContent = 'HTTP ' + r.status;
+      $('pgStatus').className = 'badge ' + (r.ok ? 'ok' : 'err');
+      $('pgOut').textContent = pretty;
+    } catch (e) {
+      $('pgStatus').textContent = 'network error';
+      $('pgStatus').className = 'badge err';
+      $('pgOut').textContent = String(e);
+    }
+  }
+
+  async function loadKeys() {
+    const tbody = $('keysBody');
+    try {
+      const r = await fetch('/api/v1/keys', { headers: authHeaders() });
+      if (!r.ok) {
+        const d = await r.json().catch(() => ({}));
+        tbody.innerHTML = `<tr><td colspan="7" style="color:var(--amber);">${d.detail || 'Enter an admin key above to manage API keys.'}</td></tr>`;
+        return;
+      }
+      const d = await r.json();
+      if (!d.keys.length) {
+        tbody.innerHTML = '<tr><td colspan="7" style="color:var(--muted);">No API keys generated yet.</td></tr>';
+        return;
+      }
+      tbody.innerHTML = d.keys.map(k => `
+        <tr>
+          <td><strong>${escapeHtml(k.name)}</strong><div style="font-size:.75rem;color:var(--muted);font-family:var(--mono);">${k.id}</div></td>
+          <td><code>${k.key_prefix}</code></td>
+          <td>${k.scopes.map(s => `<span class="badge">${s}</span>`).join(' ')}</td>
+          <td><span class="badge ${k.status === 'active' ? 'ok' : 'err'}">${k.status}</span></td>
+          <td>${k.request_count}</td>
+          <td style="color:var(--muted);">${k.expires_at ? new Date(k.expires_at * 1000).toLocaleDateString() : 'Never'}</td>
+          <td style="display:flex;gap:6px;">
+            <button class="sm" onclick="rotateKey('${k.id}')">Rotate</button>
+            ${k.status === 'active' ? `<button class="sm danger" onclick="revokeKey('${k.id}')">Revoke</button>` : ''}
+          </td>
+        </tr>
+      `).join('');
+    } catch (e) {
+      tbody.innerHTML = `<tr><td colspan="7" style="color:var(--red);">${escapeHtml(String(e))}</td></tr>`;
+    }
+  }
+
+  function escapeHtml(s) {
+    return s.replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+  }
+
+  async function generateKey() {
+    const name = $('keyName').value.trim();
+    if (!name) return toast('Enter a label for the API key');
+    const scopes = [];
+    if ($('scRead').checked) scopes.push('read');
+    if ($('scWrite').checked) scopes.push('write');
+    if ($('scAdmin').checked) scopes.push('admin');
+    if (!scopes.length) return toast('Select at least one scope');
+    const daysRaw = $('keyDays').value.trim();
+    const payload = { name, scopes, expires_in_days: daysRaw ? Number(daysRaw) : null };
+
+    const r = await fetch('/api/v1/keys', {
+      method: 'POST',
+      headers: authHeaders({ 'Content-Type': 'application/json' }),
+      body: JSON.stringify(payload),
+    });
+    const d = await r.json();
+    if (!r.ok) return toast(d.detail || 'Failed to generate key');
+    showDistribution(d);
+    $('keyName').value = '';
+    $('keyDays').value = '';
+    refreshAll();
+  }
+
+  async function rotateKey(id) {
+    const r = await fetch(`/api/v1/keys/${id}/rotate`, { method: 'POST', headers: authHeaders() });
+    const d = await r.json();
+    if (!r.ok) return toast(d.detail || 'Rotate failed');
+    showDistribution(d);
+    toast('Key rotated');
+    refreshAll();
+  }
+
+  async function revokeKey(id) {
+    const r = await fetch(`/api/v1/keys/${id}`, { method: 'DELETE', headers: authHeaders() });
+    if (!r.ok) {
+      const d = await r.json().catch(() => ({}));
+      return toast(d.detail || 'Revoke failed');
+    }
+    toast('Key revoked');
+    refreshAll();
+  }
+
+  function showDistribution(data) {
+    currentDist = data;
+    $('newKeyValue').textContent = data.api_key;
+    $('distBox').classList.add('show');
+    selectSnippet('curl');
+  }
+
+  function selectSnippet(kind) {
+    if (!currentDist) return;
+    activeSnippet = kind;
+    $('snippetBox').textContent = currentDist.distribution.snippets[kind] || '';
+  }
+
+  function copyCurrentKey() { if (currentDist) copyText(currentDist.api_key, 'API key copied'); }
+  function copySnippet(kind) { if (currentDist) copyText(currentDist.distribution.snippets[kind], kind + ' copied'); }
+  function copyActiveSnippet() { copySnippet(activeSnippet); }
+
+  function downloadKit() {
+    if (!currentDist) return;
+    const blob = new Blob([JSON.stringify(currentDist, null, 2)], { type: 'application/json' });
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = `agent-hive-client-${currentDist.key.name.replace(/[^a-z0-9_-]/gi, '_')}.json`;
+    a.click();
+    URL.revokeObjectURL(a.href);
+  }
+
+  function refreshAll() { loadHealth(); loadKeys(); }
+
+  $('baseUrlCode').textContent = location.origin;
+  $('apiToken').value = getToken();
+  loadHealth();
+  loadOpenAPI();
+</script>
+</body>
+</html>

@@ -10,6 +10,7 @@ services:
       - path: .env
         required: false
     environment:
+      HIVE_PORT: "8000"
       HIVE_DB_PATH: /data/agents.db
       HIVE_WORKSPACE: /data/workspace
       HIVE_ALLOW_PYTHON: "${HIVE_ALLOW_PYTHON:-false}"
@@ -22,6 +23,24 @@ services:
       - "host.docker.internal:host-gateway"
     security_opt:
       - no-new-privileges:true
+    develop:
+      watch:
+        - action: sync+restart
+          path: ./hive
+          target: /app/hive
+          ignore:
+            - __pycache__/
+            - "**/*.pyc"
+        - action: sync+restart
+          path: ./main.py
+          target: /app/main.py
+        - action: sync+restart
+          path: ./config.toml.example
+          target: /app/config.toml.example
+        - action: rebuild
+          path: ./requirements.txt
+        - action: rebuild
+          path: ./Dockerfile
 
   cli:
     build: .

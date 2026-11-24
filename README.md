@@ -115,11 +115,13 @@ Only you can delete agents, using `/delete`. The orchestrator has no delete tool
 
 `run_python` enforces a 30-second timeout, runs with `workspace/` as its working directory, and strips host/API environment variables from the child process — **it is not a full sandbox**. Even inside the included Docker container (see [Docker Deployment](#docker-deployment)), executed code can still read `/data` (including `agents.db`), access the container filesystem as the `hive` user, and make outbound network requests (including to `host.docker.internal` when enabled in `docker-compose.yml`). Only enable it inside an isolated container or VM and restrict container networking when running untrusted prompts.
 
-## Docker Deployment
+## Docker Deployment & REST API
 
-`agent-hive` ships with a non-root `Dockerfile` and `docker-compose.yml` supporting both a long-running **HTTP JSON API server** (default for cloud/VPS deployment) and the **interactive CLI**.
+`agent-hive` ships with a non-root `Dockerfile`, `docker-compose.yml`, and a **FastAPI** server with an interactive **API Documentation & Key Distribution Dashboard** (`/`), **Swagger UI** (`/docs`), **ReDoc** (`/redoc`), and **OpenAPI 3.1** schema (`/openapi.json`).
 
-### 1. Deploy the HTTP API server
+See **[API_DOCUMENTATION.md](API_DOCUMENTATION.md)** for the full endpoint reference, scopes, and client snippets.
+
+### 1. Deploy the HTTP API server & dashboard
 
 ```bash
 cp .env.example .env
@@ -128,27 +130,35 @@ cp .env.example .env
 docker compose up -d --build
 ```
 
+Open the dashboard at `http://localhost:8000/` (or your configured `HIVE_PORT`) to browse docs, test endpoints live, and generate/distribute scoped API keys (`hive_sk_...`).
+
+You can also mint and distribute keys directly from the CLI:
+
+```bash
+docker compose exec agent-hive python main.py key create "client-a" --scopes read,write --days 30
+```
+
 Verify health and send a request:
 
 ```bash
 curl http://localhost:8000/health
 
-# Chat with the orchestrator (add -H "Authorization: Bearer $HIVE_API_TOKEN" if auth is enabled)
-curl -X POST http://localhost:8000/chat \
+# Chat with the orchestrator (pass HIVE_API_TOKEN or a generated hive_sk_... key)
+curl -X POST http://localhost:8000/api/v1/chat \
+  -H "Authorization: Bearer $HIVE_API_TOKEN" \
   -H "Content-Type: application/json" \
   -d '{"message": "List your agents"}'
 ```
 
-**Available HTTP endpoints:**
-- `GET /health` — container healthcheck (`{"status": "ok"}`)
-- `POST /chat` — `{"message": "..."}` → orchestrator response & logs
-- `GET /agents` / `GET /agents/{name}` / `DELETE /agents/{name}` — inspect or delete agents
-- `POST /run` — `{"agent": "...", "task": "...", "model": "", "endpoint": ""}` → run a worker directly
-- `GET /tasks?limit=10` — recent task history
-- `GET /model` / `POST /model` — inspect or live-switch models (`{"target": "orch|workers|AGENT", "model": "r1"}`)
-- `POST /reset` — clear orchestrator conversation memory
+### 2. Live reload during development (`docker compose watch`)
 
-### 2. Run the interactive CLI in Docker
+`docker-compose.yml` includes a `develop.watch` configuration that automatically syncs and restarts the server on edits to `main.py`, `hive/`, or `config.toml.example` (and rebuilds on `Dockerfile` changes):
+
+```bash
+docker compose watch
+```
+
+### 3. Run the interactive CLI in Docker
 
 Shares the same persistent `/data` volume (`agents.db` and `workspace/`):
 
@@ -156,7 +166,7 @@ Shares the same persistent `/data` volume (`agents.db` and `workspace/`):
 docker compose run --rm cli
 ```
 
-### 3. Configuration & Environment Variables
+### 4. Configuration & Environment Variables
 
 - Mount a custom `config.toml` at `/app/config.toml:ro` (uncomment in `docker-compose.yml`), or use environment overrides:
   - `HIVE_CONFIG` — path to config file
@@ -175,13 +185,14 @@ docker compose run --rm cli
 
 | File | Purpose |
 |---|---|
-| `main.py` | CLI, `--serve` HTTP entrypoint, and `.env` loader |
-| `Dockerfile` / `docker-compose.yml` | non-root container image & deployment compose stack |
+| `main.py` | CLI, API key manager (`key create/list/revoke/rotate`), `--serve` entrypoint |
+| `Dockerfile` / `docker-compose.yml` / `requirements.txt` | non-root container image, Compose watch stack, FastAPI/Uvicorn deps |
+| `API_DOCUMENTATION.md` | complete REST API reference, scopes, key distribution & client snippets |
 | `config.toml.example` | template for endpoints, models, and runtime limits (copy to `config.toml`) |
 | `.env.example` | template for environment variables (`DEEPSEEK_API_KEY`, `HIVE_API_TOKEN`) |
 | `hive/orchestrator.py` | manager agent, its tools, and endpoint fallback |
-| `hive/server.py` | stdlib HTTP JSON API server for container/cloud deployments |
+| `hive/server.py` / `hive/dashboard.html` | FastAPI REST API server + interactive API docs & key distribution dashboard |
 | `hive/runner.py` | tool-use loop, schema validation, step cap |
 | `hive/tools.py` | tool library for workers |
-| `hive/registry.py` | thread-safe SQLite store (WAL mode) for agents and tasks |
+| `hive/registry.py` | thread-safe SQLite store (WAL mode) for agents, tasks, and hashed API keys |
 | `hive/llm.py` | OpenAI/DeepSeek-compatible client, auth resolution, reasoning & `<think>` handling |
