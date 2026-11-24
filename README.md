@@ -115,22 +115,26 @@ Only you can delete agents, using `/delete`. The orchestrator has no delete tool
 
 `run_python` enforces a 30-second timeout, runs with `workspace/` as its working directory, and strips host/API environment variables from the child process — **it is not a full sandbox**. Even inside the included Docker container (see [Docker Deployment](#docker-deployment)), executed code can still read `/data` (including `agents.db`), access the container filesystem as the `hive` user, and make outbound network requests (including to `host.docker.internal` when enabled in `docker-compose.yml`). Only enable it inside an isolated container or VM and restrict container networking when running untrusted prompts.
 
-## Docker Deployment & REST API
+## Docker Deployment, Studio GUI & REST API
 
-`agent-hive` ships with a non-root `Dockerfile`, `docker-compose.yml`, and a **FastAPI** server with an interactive **API Documentation & Key Distribution Dashboard** (`/`), **Swagger UI** (`/docs`), **ReDoc** (`/redoc`), and **OpenAPI 3.1** schema (`/openapi.json`).
+`agent-hive` ships with a non-root `Dockerfile`, `docker-compose.yml`, and a **FastAPI** server providing:
+- **Studio GUI** (`/`) — Sign In / Sign Up, Chatbox with drag-and-drop **`.md` / `.txt` / `.csv` file uploads** & live orchestration trace, Worker Agent Studio, Workspace File Editor, Task History, **Admin Dashboard** (revoke/restrict users, per-user token limits, persisted policies & live model switcher, API key generator & distribution), and built-in API Playground.
+- **API Docs** — **Swagger UI** (`/docs`), **ReDoc** (`/redoc`), **OpenAPI 3.1** (`/openapi.json`), and **[API_DOCUMENTATION.md](API_DOCUMENTATION.md)**.
+- **Full Persistence** — Users, sessions, chat histories, uploaded files, token usage, agents, tasks, API keys, and settings are all stored in `/data` (`hive_data` Docker volume) and survive `docker restart`.
 
-See **[API_DOCUMENTATION.md](API_DOCUMENTATION.md)** for the full endpoint reference, scopes, and client snippets.
-
-### 1. Deploy the HTTP API server & dashboard
+### 1. Deploy the Studio GUI & API server
 
 ```bash
 cp .env.example .env
 # Edit .env with your DEEPSEEK_API_KEY (and optionally HIVE_API_TOKEN)
 
 docker compose up -d --build
+
+# View the auto-generated initial admin username & password (must be reset on first login)
+docker compose logs agent-hive
 ```
 
-Open the dashboard at `http://localhost:8000/` (or your configured `HIVE_PORT`) to browse docs, test endpoints live, and generate/distribute scoped API keys (`hive_sk_...`).
+Open `http://localhost:8000/` (or your configured `HIVE_PORT`), sign in with the generated admin credentials from `docker logs`, and set your permanent admin username & password.
 
 You can also mint and distribute keys directly from the CLI:
 

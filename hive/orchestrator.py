@@ -140,7 +140,7 @@ class Orchestrator:
         return rel
 
     # --- user entry point ---------------------------------------------------
-    def handle(self, user_text):
+    def handle(self, user_text, history_override=None):
         oc = self.cfg["orchestrator"]
         w = self.cfg["workers"]
         aliases = self.cfg.get("models", {})
@@ -152,14 +152,17 @@ class Orchestrator:
             models=alias_desc,
         )
         msgs = [{"role": "system", "content": system}]
-        for u, a in self.history:
+        turns = history_override if history_override is not None else self.history
+        max_turns = self.cfg["runtime"]["history_turns"]
+        for u, a in turns[-max_turns:]:
             msgs += [{"role": "user", "content": u}, {"role": "assistant", "content": a}]
         msgs.append({"role": "user", "content": user_text})
         oc_model, oc_ep = self.resolve_model(oc["model"], oc["endpoint"])
         answer = self._run(oc_ep, oc_model, msgs, self.meta, f"orchestrator:{oc_model}")
         self._save_output_md("orchestrator", oc_model, oc_ep, user_text, answer)
-        self.history.append((user_text, answer))
-        self.history = self.history[-self.cfg["runtime"]["history_turns"]:]
+        if history_override is None:
+            self.history.append((user_text, answer))
+            self.history = self.history[-max_turns:]
         return answer
 
     def run_worker(self, name, task, model_override="", endpoint_override=""):

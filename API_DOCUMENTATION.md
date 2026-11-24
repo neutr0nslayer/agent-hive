@@ -14,30 +14,42 @@
 
 ---
 
-## 1. Authentication & Scopes
+## 1. Authentication, Accounts & Scopes
 
-Pass an API key on every request (except `/`, `/health`, `/docs`, `/redoc`, `/openapi.json`) using either header:
+`agent-hive` is **fail-closed** and supports both **GUI user sessions** (HttpOnly cookies backed by SQLite) and **API keys** (`Authorization: Bearer <key>` or `X-API-Key: <key>`).
 
+### Initial Admin Bootstrap (Mandatory First-Login Reset)
+- On first startup when no admin exists in SQLite (`/data/agents.db`), the server generates a random admin username (`admin_xxxxxx`) and password and prints them once in `docker logs`.
+- On first login, the admin **must** call `POST /api/v1/auth/reset-credentials` (enforced by the GUI and API) to set a new username and password before accessing any other endpoint.
+- Because users, sessions, chat history, uploaded files, token usage, agents, tasks, API keys, and settings all live in `/data` (`hive_data` Docker volume), everything persists across `docker restart`.
+
+### Auth Endpoints
+- `GET /api/v1/auth/status` *(public)* — returns `allow_signup` and `allowed_chat_file_types`
+- `POST /api/v1/auth/signup` *(public when enabled)* — create a `user` account with default token quota
+- `POST /api/v1/auth/login` *(public)* — sign in and receive persistent `hive_session` HttpOnly cookie
+- `POST /api/v1/auth/logout` — invalidate session and clear cookie
+- `GET /api/v1/auth/me` — return current user profile, role, status, and token quota
+- `POST /api/v1/auth/reset-credentials` — change username & password (required on first admin login)
+
+### API Key Headers & Permission Scopes
+Pass an API key on programmatic requests using:
 ```http
 Authorization: Bearer <API_KEY>
 ```
-or:
-```http
-X-API-Key: <API_KEY>
-```
+or `X-API-Key: <API_KEY>`. Master token `HIVE_API_TOKEN` (from `.env`) always has full `admin` scope. Generated keys (`hive_sk_...`) are stored as **SHA-256 hashes** only.
 
-### Auth Modes
-- **Open mode (initial boot)**: When `HIVE_API_TOKEN` is empty **and** no active keys exist in SQLite, endpoints work without auth so you can immediately open `/` and generate your first admin key.
-- **Protected mode (recommended)**: As soon as `HIVE_API_TOKEN` is set in `.env` **or** at least one active API key is generated, authentication and scope enforcement turn on automatically.
-- **Master token (`HIVE_API_TOKEN`)**: Always carries full `admin` privileges. Generated keys are stored as **SHA-256 hashes** only (`hive_sk_...`) in SQLite and are shown once at creation time.
-
-### Permission Scopes
-
-| Scope | Allowed Operations |
+| Scope / Role | Allowed Operations |
 |---|---|
-| `read` | All `GET` endpoints (agents, tasks, models, tools, chat history, workspace files) |
-| `write` | `POST /api/v1/chat`, `POST /api/v1/chat/reset`, `POST /api/v1/agents`, `PATCH /api/v1/agents/{name}`, `POST /api/v1/run`, `PUT /api/v1/workspace/files/{path}` |
-| `admin` | Full access including API key management (`/api/v1/keys`), model switching (`POST /api/v1/models`), and deletion (`DELETE /api/v1/agents/{name}`, `DELETE /api/v1/workspace/files/{path}`) |
+| `read` (or `restricted` user) | All `GET` endpoints (agents, tasks, models, tools, chat history, workspace files) |
+| `write` (or `active` user) | Chat (`POST /api/v1/chat`, `POST /api/v1/chat/upload`), `POST /api/v1/chat/reset`, agent create/update, `POST /api/v1/run`, workspace write |
+| `admin` (or `admin` role) | Full access including user governance (`/api/v1/admin/*`), API keys (`/api/v1/keys`), model switching (`POST /api/v1/models`), and deletions |
+
+### Admin Governance Endpoints (`admin` scope)
+- `GET /api/v1/admin/users` — list all users, statuses (`active` / `restricted` / `revoked`), token usage & limits
+- `POST /api/v1/admin/users` — create a user directly (`username`, `password`, `role`, `token_limit`)
+- `PATCH /api/v1/admin/users/{user_id}` — revoke (immediately clears sessions), restrict (with optional `restriction_reason`), activate, set/clear `token_limit`, or `reset_tokens: true`
+- `DELETE /api/v1/admin/users/{user_id}` — delete a user account
+- `GET /api/v1/admin/settings` / `PATCH /api/v1/admin/settings` — toggle `allow_signup` and configure `default_user_token_limit` (persisted in SQLite)
 
 ---
 
@@ -127,6 +139,11 @@ Send a natural-language request to the orchestrator agent.
   ]
 }
 ```
+
+#### `POST /api/v1/chat/upload` *(Scope: `write`, `multipart/form-data`)*
+Send a chat prompt with up to 5 attached files. **Strictly allows `.md`, `.markdown`, `.txt`, and `.csv` UTF-8 text files only** (max 2 MB each); all other file types return `400`. Uploaded files are persisted in `workspace/uploads/<username>/` and made available to worker agents.
+
+**Fields:** `message` (form text), `reset_before` (bool, optional), `files` (one or more `.md`/`.txt`/`.csv` files).
 
 #### `GET /api/v1/chat/history` *(Scope: `read`)*
 Returns the orchestrator's sliding-window conversation memory.
@@ -326,4 +343,5 @@ console.log(await resp.json());
 | `403` | Valid API key lacking the required scope (`read`, `write`, or `admin`) |
 | `404` | Resource (agent, task, file, key) not found |
 | `422` | Request JSON failed Pydantic schema validation |
+| `429` | User token usage limit reached |
 | `502` | Upstream LLM endpoint failed or returned an error |

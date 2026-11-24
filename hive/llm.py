@@ -2,10 +2,42 @@
 import json
 import os
 import re
+import threading
 import urllib.error
 import urllib.request
 
 THINK_RE = re.compile(r"<think>.*?</think>", re.S)
+_usage_tls = threading.local()
+
+
+def start_usage_tracking():
+    """Begin accumulating token usage for the current thread."""
+    _usage_tls.usage = {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
+
+
+def finish_usage_tracking() -> dict:
+    """Stop accumulating and return token usage dict for the current thread."""
+    u = getattr(_usage_tls, "usage", None) or {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
+    _usage_tls.usage = None
+    return dict(u)
+
+
+def _record_usage(data, messages, content):
+    acc = getattr(_usage_tls, "usage", None)
+    if acc is None:
+        return
+    u = data.get("usage") if isinstance(data, dict) else None
+    if isinstance(u, dict) and (u.get("total_tokens") or u.get("prompt_tokens") or u.get("completion_tokens")):
+        pt = int(u.get("prompt_tokens") or 0)
+        ct = int(u.get("completion_tokens") or 0)
+        tt = int(u.get("total_tokens") or (pt + ct))
+    else:
+        pt = max(1, len(json.dumps(messages, default=str)) // 4)
+        ct = max(1, len(content or "") // 4)
+        tt = pt + ct
+    acc["prompt_tokens"] += pt
+    acc["completion_tokens"] += ct
+    acc["total_tokens"] += tt
 
 
 class LLMError(Exception):
@@ -73,6 +105,7 @@ def chat(base_url, model, messages, tools=None, temperature=0.2, timeout=600, ap
         raise LLMError(f"unexpected response from {base_url}: {str(data)[:300]}") from e
 
     content = THINK_RE.sub("", msg.get("content") or "").strip()
+    _record_usage(data, messages, content)
     reasoning_content = msg.get("reasoning_content")
     calls = []
     for i, tc in enumerate(msg.get("tool_calls") or []):
