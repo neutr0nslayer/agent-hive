@@ -108,11 +108,64 @@ Only you can delete agents, using `/delete`. The orchestrator has no delete tool
 - **Short results**: tool output is truncated to 6,000 characters to keep context lean.
 - **Fallback endpoint**: worker calls can automatically retry on a fallback endpoint if the primary endpoint is unreachable.
 
-## `run_python` warning
+## `run_python` Warning
 
-`allow_python = true` lets agents run Python with your user's permissions. It has a timeout and
-uses the workspace as its working directory, but it is **not a sandbox**. Enable it only inside a
-container or VM, e.g. run `agent-hive` in Docker with only the workspace mounted.
+> [!WARNING]
+> Setting `allow_python = true` (in `config.toml`) or `HIVE_ALLOW_PYTHON=true` (in Docker) lets worker agents execute arbitrary Python code with the process user's permissions.
+
+`run_python` enforces a 30-second timeout, runs with `workspace/` as its working directory, and strips host/API environment variables from the child process — **it is not a full sandbox**. Even inside the included Docker container (see [Docker Deployment](#docker-deployment)), executed code can still read `/data` (including `agents.db`), access the container filesystem as the `hive` user, and make outbound network requests (including to `host.docker.internal` when enabled in `docker-compose.yml`). Only enable it inside an isolated container or VM and restrict container networking when running untrusted prompts.
+
+## Docker Deployment
+
+`agent-hive` ships with a non-root `Dockerfile` and `docker-compose.yml` supporting both a long-running **HTTP JSON API server** (default for cloud/VPS deployment) and the **interactive CLI**.
+
+### 1. Deploy the HTTP API server
+
+```bash
+cp .env.example .env
+# Edit .env with your DEEPSEEK_API_KEY (and optionally HIVE_API_TOKEN)
+
+docker compose up -d --build
+```
+
+Verify health and send a request:
+
+```bash
+curl http://localhost:8000/health
+
+# Chat with the orchestrator (add -H "Authorization: Bearer $HIVE_API_TOKEN" if auth is enabled)
+curl -X POST http://localhost:8000/chat \
+  -H "Content-Type: application/json" \
+  -d '{"message": "List your agents"}'
+```
+
+**Available HTTP endpoints:**
+- `GET /health` — container healthcheck (`{"status": "ok"}`)
+- `POST /chat` — `{"message": "..."}` → orchestrator response & logs
+- `GET /agents` / `GET /agents/{name}` / `DELETE /agents/{name}` — inspect or delete agents
+- `POST /run` — `{"agent": "...", "task": "...", "model": "", "endpoint": ""}` → run a worker directly
+- `GET /tasks?limit=10` — recent task history
+- `GET /model` / `POST /model` — inspect or live-switch models (`{"target": "orch|workers|AGENT", "model": "r1"}`)
+- `POST /reset` — clear orchestrator conversation memory
+
+### 2. Run the interactive CLI in Docker
+
+Shares the same persistent `/data` volume (`agents.db` and `workspace/`):
+
+```bash
+docker compose run --rm cli
+```
+
+### 3. Configuration & Environment Variables
+
+- Mount a custom `config.toml` at `/app/config.toml:ro` (uncomment in `docker-compose.yml`), or use environment overrides:
+  - `HIVE_CONFIG` — path to config file
+  - `HIVE_DB_PATH` — SQLite path (default `/data/agents.db` in Docker)
+  - `HIVE_WORKSPACE` — workspace directory (default `/data/workspace` in Docker)
+  - `HIVE_ALLOW_PYTHON` — `true` / `false` (safer inside a container than on your host)
+  - `HIVE_API_TOKEN` — optional Bearer token protecting all HTTP endpoints except `/health`
+  - `HIVE_PORT` — host/container listen port (default `8000`)
+- To reach a local Ollama/vLLM server running on the Docker host, point your endpoint `base_url` in `config.toml` to `http://host.docker.internal:11434/v1`.
 
 ## Testing without an API key or GPU
 
@@ -122,11 +175,13 @@ container or VM, e.g. run `agent-hive` in Docker with only the workspace mounted
 
 | File | Purpose |
 |---|---|
-| `main.py` | CLI and `.env` loader |
+| `main.py` | CLI, `--serve` HTTP entrypoint, and `.env` loader |
+| `Dockerfile` / `docker-compose.yml` | non-root container image & deployment compose stack |
 | `config.toml.example` | template for endpoints, models, and runtime limits (copy to `config.toml`) |
-| `.env.example` | template for environment variables (`DEEPSEEK_API_KEY`) |
+| `.env.example` | template for environment variables (`DEEPSEEK_API_KEY`, `HIVE_API_TOKEN`) |
 | `hive/orchestrator.py` | manager agent, its tools, and endpoint fallback |
+| `hive/server.py` | stdlib HTTP JSON API server for container/cloud deployments |
 | `hive/runner.py` | tool-use loop, schema validation, step cap |
 | `hive/tools.py` | tool library for workers |
-| `hive/registry.py` | SQLite store for agents and tasks |
+| `hive/registry.py` | thread-safe SQLite store (WAL mode) for agents and tasks |
 | `hive/llm.py` | OpenAI/DeepSeek-compatible client, auth resolution, reasoning & `<think>` handling |

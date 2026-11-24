@@ -1,4 +1,5 @@
 """Vetted tool library. Agents can only use tools defined here; models never write tools."""
+import os
 import subprocess
 import sys
 import urllib.request
@@ -102,11 +103,15 @@ class ToolLibrary:
 
     def run_python(self, code):
         script = self.ws / ".agent_script.py"
-        script.write_text(code)
+        script.write_text(code, encoding="utf-8")
+        safe_env = {k: os.environ[k] for k in ("PATH", "LANG", "LC_ALL", "TMPDIR") if k in os.environ}
+        safe_env["PYTHONIOENCODING"] = "utf-8"
         try:
-            r = subprocess.run([sys.executable, script.name], cwd=self.ws,
+            r = subprocess.run([sys.executable, script.name], cwd=self.ws, env=safe_env,
                                capture_output=True, text=True, timeout=30)
         except subprocess.TimeoutExpired:
             return "ERROR: script exceeded 30 s and was stopped"
+        finally:
+            script.unlink(missing_ok=True)
         out = r.stdout + (f"\n[stderr]\n{r.stderr}" if r.stderr else "")
         return _clip(f"exit code {r.returncode}\n{out}")

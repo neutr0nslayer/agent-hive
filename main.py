@@ -1,6 +1,8 @@
-"""agent-hive CLI: talk to the orchestrator, or manage agents directly with /commands."""
+"""agent-hive CLI & HTTP server entrypoint."""
+import argparse
 import json
 import os
+import signal
 import sys
 import tomllib
 from pathlib import Path
@@ -8,6 +10,7 @@ from pathlib import Path
 from hive.llm import LLMError
 from hive.orchestrator import Orchestrator
 from hive.registry import Registry
+from hive.server import serve
 from hive.tools import ToolLibrary
 
 HELP = """Commands:
@@ -54,25 +57,68 @@ def log(msg):
     print(f"{DIM}{msg}{RESET}", flush=True)
 
 
+def _env_bool(name, default):
+    val = os.environ.get(name)
+    if val is None or val.strip() == "":
+        return default
+    return val.strip().lower() in ("1", "true", "yes", "on")
+
+
+def _parse_args(argv):
+    p = argparse.ArgumentParser(description="agent-hive: multi-model agent orchestrator")
+    p.add_argument("config", nargs="?", default=None, help="path to config.toml")
+    p.add_argument("--config", dest="config_opt", default=None, help="path to config.toml")
+    p.add_argument("--serve", action="store_true",
+                   default=_env_bool("HIVE_SERVE", False),
+                   help="run HTTP API server instead of interactive CLI")
+    p.add_argument("--host", default=os.environ.get("HIVE_HOST", "0.0.0.0"),
+                   help="HTTP server bind host (default: 0.0.0.0)")
+    p.add_argument("--port", type=int, default=int(os.environ.get("HIVE_PORT", "8000")),
+                   help="HTTP server bind port (default: 8000)")
+    return p.parse_args(argv)
+
+
 def main():
     root = Path(__file__).resolve().parent
     load_dotenv(root / ".env", Path.cwd() / ".env")
-    cfg_path = Path(sys.argv[1]) if len(sys.argv) > 1 else root / "config.toml"
+    args = _parse_args(sys.argv[1:])
+
+    cfg_arg = args.config_opt or args.config or os.environ.get("HIVE_CONFIG")
+    cfg_path = Path(cfg_arg) if cfg_arg else root / "config.toml"
     if not cfg_path.is_file() and (root / "config.toml.example").is_file():
         cfg_path = root / "config.toml.example"
     cfg = tomllib.loads(cfg_path.read_text(encoding="utf-8"))
     rt = cfg["runtime"]
-    db_path = Path(rt["db_path"])
+
+    db_raw = os.environ.get("HIVE_DB_PATH") or rt["db_path"]
+    db_path = Path(db_raw)
     if not db_path.is_absolute():
         db_path = root / db_path
-    ws_path = Path(rt["workspace"])
+
+    ws_raw = os.environ.get("HIVE_WORKSPACE") or rt["workspace"]
+    ws_path = Path(ws_raw)
     if not ws_path.is_absolute():
         ws_path = root / ws_path
+
+    allow_python = _env_bool("HIVE_ALLOW_PYTHON", rt.get("allow_python", False))
+
     reg = Registry(db_path)
-    lib = ToolLibrary(ws_path, rt.get("allow_python", False))
+    lib = ToolLibrary(ws_path, allow_python)
     orch = Orchestrator(cfg, reg, lib, log)
 
-    print("agent-hive ready. Type /help for commands.")
+    if args.serve:
+        serve(orch, host=args.host, port=args.port)
+        return
+
+    def _sigterm(*_a):
+        raise KeyboardInterrupt
+
+    try:
+        signal.signal(signal.SIGTERM, _sigterm)
+    except ValueError:
+        pass
+
+    print("agent-hive ready. Type /help for commands.", flush=True)
     while True:
         try:
             line = input("\nyou> ").strip()

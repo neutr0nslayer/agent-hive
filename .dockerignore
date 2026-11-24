@@ -1,0 +1,35 @@
+# Git & IDE
+.git
+.gitignore
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# Secrets & local overrides (mount or inject via env at runtime)
+.env
+*.env
+config.toml
+
+# Runtime state & sandbox
+agents.db
+agents.db-journal
+agents.db-wal
+agents.db-shm
+workspace/
+data/
+
+# Python caches & virtualenvs
+__pycache__/
+*.py[cod]
+*$py.class
+.venv/
+venv/
+env/
+.pytest_cache/
+
+# Docs & test scripts not needed in runtime image
+tests/
+context.md
+README.md
+LICENSE

@@ -9,7 +9,9 @@ config.toml
 agents.db
 agents.db-journal
 agents.db-wal
+agents.db-shm
 workspace/
+data/
 
 # Python bytecode & environments
 __pycache__/
