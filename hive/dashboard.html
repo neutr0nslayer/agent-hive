@@ -107,21 +107,85 @@
     .panel { display: none; }
     .panel.active { display: block; }
 
-    /* Chat Layout */
-    .chat-layout { display: grid; grid-template-columns: 1fr 340px; gap: 16px; align-items: start; }
-    @media (max-width: 960px) { .chat-layout { grid-template-columns: 1fr; } }
-    .chat-box { display: flex; flex-direction: column; height: calc(100vh - 190px); min-height: 500px; padding: 0; overflow: hidden; }
+    /* Chat Layout & ChatGPT-style Expandable Thinking Trace */
+    .chat-layout { max-width: 980px; margin: 0 auto; }
+    .chat-box { display: flex; flex-direction: column; height: calc(100vh - 185px); min-height: 520px; padding: 0; overflow: hidden; }
     .chat-header {
       padding: 12px 16px; border-bottom: 1px solid var(--border);
       display: flex; justify-content: space-between; align-items: center; gap: 8px;
     }
-    .chat-messages { flex: 1; overflow-y: auto; padding: 16px; display: flex; flex-direction: column; gap: 12px; }
+    .chat-messages { flex: 1; overflow-y: auto; padding: 18px; display: flex; flex-direction: column; gap: 14px; }
     .msg {
-      max-width: 88%; padding: 11px 14px; border-radius: 12px; font-size: .9rem;
+      max-width: 88%; padding: 12px 15px; border-radius: 13px; font-size: .91rem;
       border: 1px solid var(--border); word-wrap: break-word;
     }
     .msg.user { align-self: flex-end; background: #192949; border-color: #2b4475; }
-    .msg.assistant { align-self: flex-start; background: var(--surface-2); }
+    .msg.assistant { align-self: flex-start; background: var(--surface-2); min-width: 260px; }
+
+    .thought-wrap { margin-bottom: 8px; }
+    .thought-toggle {
+      display: inline-flex; align-items: center; gap: 8px; max-width: 100%;
+      padding: 5px 11px; border-radius: 999px; font-size: .79rem;
+      background: rgba(96,165,250,.07); border: 1px solid rgba(96,165,250,.22);
+      color: var(--muted); cursor: pointer; user-select: none; transition: .15s all;
+    }
+    .thought-toggle:hover { border-color: var(--accent); color: var(--text); background: rgba(96,165,250,.13); }
+    .thought-chev {
+      display: inline-block; font-size: .72rem; transition: transform .18s ease; opacity: .8;
+    }
+    .thought-wrap.open .thought-chev { transform: rotate(90deg); }
+    .thought-dot {
+      width: 8px; height: 8px; border-radius: 50%; background: var(--accent); flex-shrink: 0;
+      animation: thoughtPulse 1.1s ease-in-out infinite;
+    }
+    .thought-wrap.done .thought-dot { background: var(--green); animation: none; opacity: .85; }
+    .thought-wrap.err .thought-dot { background: var(--red); animation: none; }
+    @keyframes thoughtPulse {
+      0%, 100% { transform: scale(.85); opacity: .45; }
+      50% { transform: scale(1.25); opacity: 1; }
+    }
+    .thought-title { font-weight: 600; color: #dbeafe; white-space: nowrap; }
+    .thought-wrap.thinking .thought-title {
+      background: linear-gradient(90deg, #93c5fd 0%, #ffffff 50%, #93c5fd 100%);
+      background-size: 200% auto;
+      -webkit-background-clip: text; -webkit-text-fill-color: transparent;
+      animation: shimmerText 1.8s linear infinite;
+    }
+    @keyframes shimmerText {
+      to { background-position: 200% center; }
+    }
+    .thought-sub {
+      color: var(--muted); font-size: .75rem; font-family: var(--mono);
+      overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 360px;
+    }
+    .thought-timer { color: var(--muted); font-family: var(--mono); font-size: .74rem; white-space: nowrap; }
+
+    .thought-panel {
+      display: none; flex-direction: column; gap: 7px;
+      margin: 8px 0 10px 8px; padding: 6px 8px 6px 14px;
+      border-left: 2px solid #2a3c5f; max-height: 340px; overflow-y: auto;
+      overscroll-behavior: contain; font-size: .8rem;
+    }
+    .thought-wrap.open .thought-panel { display: flex; }
+    .thought-reasoning {
+      color: #9fb0ca; font-style: italic; line-height: 1.55; white-space: pre-wrap;
+      background: rgba(10,14,23,.55); border: 1px solid var(--border); border-radius: 8px;
+      padding: 8px 10px;
+    }
+    .thought-steps { display: flex; flex-direction: column; gap: 5px; }
+    .thought-step {
+      display: flex; flex-wrap: wrap; align-items: baseline; gap: 6px;
+      padding: 5px 8px; border-radius: 7px; background: rgba(10,14,23,.65);
+      border: 1px solid rgba(37,49,73,.8); font-family: var(--mono); font-size: .75rem;
+      word-break: break-word;
+    }
+    .thought-step .ag-tag {
+      font-size: .68rem; padding: 1px 6px; border-radius: 5px;
+      background: rgba(99,102,241,.16); color: #a5b4fc; border: 1px solid rgba(99,102,241,.3);
+    }
+    .thought-step.call { border-color: rgba(96,165,250,.3); color: #bfdbfe; }
+    .thought-step.res { color: var(--muted); }
+    .thought-step.err { border-color: rgba(248,113,113,.4); color: #fca5a5; }
     .msg-meta {
       display: flex; gap: 8px; align-items: center; font-size: .73rem; color: var(--muted);
       margin-bottom: 5px;
@@ -350,16 +414,6 @@
               <textarea id="chatInput" placeholder="Ask the orchestrator… or drag &amp; drop .md, .txt, .csv files here (Enter to send, Shift+Enter for newline)"></textarea>
               <button type="button" class="primary" id="sendBtn" onclick="sendChat()">Send</button>
             </div>
-          </div>
-        </div>
-
-        <div class="card trace-panel">
-          <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px;">
-            <strong>Orchestration Trace</strong>
-            <span id="traceTokenBadge" class="badge">0 tokens</span>
-          </div>
-          <div id="traceList" class="trace-list">
-            <div style="color:var(--muted);">Tool calls and worker delegations will appear here.</div>
           </div>
         </div>
       </div>
@@ -1343,9 +1397,75 @@ async function loadChatHistory() {
   }
   box.innerHTML = '';
   msgs.forEach(m => appendChatMessage(m));
-  const lastAsst = [...msgs].reverse().find(m => m.role === 'assistant');
-  if (lastAsst) renderTrace(lastAsst.logs || [], lastAsst.tokens_used || 0);
   box.scrollTop = box.scrollHeight;
+}
+
+function parseTraceLogs(logs) {
+  let durationSec = null;
+  const reasoningParts = [];
+  const steps = [];
+  for (const raw of (logs || [])) {
+    const line = String(raw || '');
+    const dm = line.match(/^\[meta\]\s*duration=([\d.]+)s/);
+    if (dm) { durationSec = Number(dm[1]); continue; }
+    const m = line.match(/^\[([^\]]+)\]\s*(.*)$/);
+    const actor = m ? m[1].split(':', 1)[0] : 'hive';
+    const rest = m ? m[2] : line;
+    if (rest.startsWith('💭 ')) {
+      reasoningParts.push(rest.slice(2).trim());
+      continue;
+    }
+    let kind = 'info';
+    if (rest.startsWith('→')) kind = 'call';
+    else if (rest.startsWith('← ERROR:') || rest.includes('ERROR:')) kind = 'err';
+    else if (rest.startsWith('←')) kind = 'res';
+    steps.push({ actor, text: rest, kind });
+  }
+  const callCount = steps.filter(s => s.kind === 'call').length;
+  return { durationSec, reasoning: reasoningParts.join('\n\n'), steps, callCount };
+}
+
+function renderThoughtStepHtml(step) {
+  return `<div class="thought-step ${step.kind}"><span class="ag-tag">${esc(step.actor)}</span><span>${esc(step.text)}</span></div>`;
+}
+
+function createThoughtWidget({ thinking = false, logs = [], durationSec = null }) {
+  const parsed = parseTraceLogs(logs);
+  const dur = durationSec != null ? durationSec : parsed.durationSec;
+  const wrap = document.createElement('div');
+  wrap.className = 'thought-wrap ' + (thinking ? 'thinking' : 'done');
+
+  const hasDetails = thinking || parsed.steps.length > 0 || Boolean(parsed.reasoning);
+  if (!hasDetails && dur == null) {
+    wrap.classList.add('hidden');
+  }
+
+  const stepSummary = parsed.callCount > 0
+    ? `${parsed.callCount} tool step${parsed.callCount === 1 ? '' : 's'}`
+    : (parsed.steps.length > 0 ? `${parsed.steps.length} event${parsed.steps.length === 1 ? '' : 's'}` : '');
+  const doneTitle = dur != null ? `Thought for ${dur}s` : 'Thought';
+
+  wrap.innerHTML = `
+    <button type="button" class="thought-toggle" title="Click to expand/collapse thinking &amp; tool trace">
+      <span class="thought-dot"></span>
+      <span class="thought-title">${thinking ? 'Thinking…' : esc(doneTitle)}</span>
+      <span class="thought-sub">${thinking ? 'starting…' : esc(stepSummary)}</span>
+      <span class="thought-timer">${thinking ? '0.0s' : ''}</span>
+      <span class="thought-chev">&#9656;</span>
+    </button>
+    <div class="thought-panel">
+      <div class="thought-reasoning ${parsed.reasoning ? '' : 'hidden'}">${esc(parsed.reasoning)}</div>
+      <div class="thought-steps">${parsed.steps.map(renderThoughtStepHtml).join('')}</div>
+    </div>
+  `;
+
+  const toggleBtn = wrap.querySelector('.thought-toggle');
+  toggleBtn.addEventListener('click', () => {
+    wrap.classList.toggle('open');
+    wrap._userToggled = true;
+  });
+
+  return wrap;
 }
 
 function appendChatMessage(m) {
@@ -1356,28 +1476,171 @@ function appendChatMessage(m) {
   const filesHtml = (m.files && m.files.length)
     ? `<div class="file-chips">${m.files.map(f => `<span class="chip">${esc(f.filename || f.workspace_path)}</span>`).join('')}</div>`
     : '';
-  const tokHtml = m.tokens_used ? `<span class="badge">${m.tokens_used.toLocaleString()} tok</span>` : '';
+  const tokHtml = m.tokens_used ? `<span class="badge msg-tok-badge">${m.tokens_used.toLocaleString()} tok</span>` : '';
   el.innerHTML = `
     <div class="msg-meta"><strong>${m.role === 'user' ? esc(meUser.username) : 'agent-hive'}</strong>${tokHtml}</div>
-    <div class="msg-body">${renderSimpleMd(m.content)}</div>
+    <div class="thought-slot"></div>
+    <div class="msg-body md-inline">${m.content ? renderSimpleMd(m.content) : ''}</div>
     ${filesHtml}
   `;
-  if (m.role === 'assistant' && m.logs) {
-    el.style.cursor = 'pointer';
-    el.title = 'Click to view orchestration trace';
-    el.onclick = () => renderTrace(m.logs, m.tokens_used || 0);
+  if (m.role === 'assistant') {
+    const slot = el.querySelector('.thought-slot');
+    slot.appendChild(createThoughtWidget({ thinking: false, logs: m.logs || [] }));
   }
   box.appendChild(el);
   box.scrollTop = box.scrollHeight;
+  return el;
 }
 
-function renderTrace(logs, tokens) {
-  $('traceTokenBadge').textContent = `${(tokens || 0).toLocaleString()} tokens`;
-  if (!logs || !logs.length) {
-    $('traceList').innerHTML = '<div style="color:var(--muted);">No tool calls for this turn.</div>';
-    return;
+function createLiveStreamingAssistantBubble() {
+  const box = $('chatMessages');
+  if (box.firstElementChild && !box.firstElementChild.classList.contains('msg')) box.innerHTML = '';
+  const el = document.createElement('div');
+  el.className = 'msg assistant';
+  el.innerHTML = `
+    <div class="msg-meta"><strong>agent-hive</strong><span class="badge msg-tok-badge hidden"></span></div>
+    <div class="thought-slot"></div>
+    <div class="msg-body md-inline"></div>
+  `;
+  const thought = createThoughtWidget({ thinking: true, logs: [] });
+  el.querySelector('.thought-slot').appendChild(thought);
+  box.appendChild(el);
+  box.scrollTop = box.scrollHeight;
+
+  const titleEl = thought.querySelector('.thought-title');
+  const subEl = thought.querySelector('.thought-sub');
+  const timerEl = thought.querySelector('.thought-timer');
+  const panelEl = thought.querySelector('.thought-panel');
+  const reasoningEl = thought.querySelector('.thought-reasoning');
+  const stepsEl = thought.querySelector('.thought-steps');
+  const bodyEl = el.querySelector('.msg-body');
+  const tokEl = el.querySelector('.msg-tok-badge');
+
+  let reasoningText = '';
+  let contentText = '';
+  let callCount = 0;
+  let eventCount = 0;
+  const startedAt = performance.now();
+  const timerId = setInterval(() => {
+    const sec = ((performance.now() - startedAt) / 1000).toFixed(1);
+    timerEl.textContent = `${sec}s`;
+  }, 100);
+
+  let chatStick = true;
+  let panelStick = true;
+  let programmaticBoxScroll = false;
+  let programmaticPanelScroll = false;
+
+  const onBoxScroll = () => {
+    if (programmaticBoxScroll) return;
+    const dist = box.scrollHeight - box.scrollTop - box.clientHeight;
+    chatStick = dist <= 20;
+  };
+  const onPanelScroll = () => {
+    if (programmaticPanelScroll) return;
+    const dist = panelEl.scrollHeight - panelEl.scrollTop - panelEl.clientHeight;
+    panelStick = dist <= 20;
+  };
+  box.addEventListener('scroll', onBoxScroll, { passive: true });
+  panelEl.addEventListener('scroll', onPanelScroll, { passive: true });
+
+  function scrollChatIfPinned() {
+    if (!chatStick) return;
+    programmaticBoxScroll = true;
+    box.scrollTop = box.scrollHeight;
+    requestAnimationFrame(() => { programmaticBoxScroll = false; });
   }
-  $('traceList').innerHTML = logs.map(l => `<div class="trace-item">${esc(l)}</div>`).join('');
+
+  function scrollPanelIfPinned() {
+    if (!panelStick || !thought.classList.contains('open')) return;
+    programmaticPanelScroll = true;
+    panelEl.scrollTop = panelEl.scrollHeight;
+    requestAnimationFrame(() => { programmaticPanelScroll = false; });
+  }
+
+  function cleanupScrollListeners() {
+    box.removeEventListener('scroll', onBoxScroll);
+    panelEl.removeEventListener('scroll', onPanelScroll);
+  }
+
+  return {
+    onEvent(ev) {
+      if (!ev || typeof ev !== 'object') return;
+      if (ev.type === 'status' && ev.text) {
+        subEl.textContent = ev.text;
+      } else if (ev.type === 'reasoning_delta' && ev.delta) {
+        reasoningText += ev.delta;
+        reasoningEl.classList.remove('hidden');
+        reasoningEl.textContent = reasoningText;
+        subEl.textContent = 'Reasoning…';
+        scrollPanelIfPinned();
+        scrollChatIfPinned();
+      } else if (ev.type === 'trace' && ev.line) {
+        const parsed = parseTraceLogs([ev.line]);
+        for (const st of parsed.steps) {
+          eventCount++;
+          if (st.kind === 'call') {
+            callCount++;
+            const fnMatch = st.text.match(/^→\s*([a-zA-Z0-9_]+)/);
+            if (fnMatch) subEl.textContent = `${st.actor} → ${fnMatch[1]}…`;
+          }
+          stepsEl.insertAdjacentHTML('beforeend', renderThoughtStepHtml(st));
+        }
+        scrollPanelIfPinned();
+        scrollChatIfPinned();
+      } else if (ev.type === 'content_delta' && ev.delta) {
+        contentText += ev.delta;
+        subEl.textContent = 'Writing response…';
+        bodyEl.innerHTML = renderSimpleMd(contentText);
+        scrollChatIfPinned();
+      } else if (ev.type === 'error') {
+        clearInterval(timerId);
+        cleanupScrollListeners();
+        thought.classList.remove('thinking');
+        thought.classList.add('err');
+        titleEl.textContent = 'Stopped with error';
+        subEl.textContent = '';
+        bodyEl.innerHTML = `<span style="color:var(--red);">Error: ${esc(ev.detail || 'Request failed')}</span>`;
+        scrollChatIfPinned();
+      } else if (ev.type === 'done') {
+        clearInterval(timerId);
+        cleanupScrollListeners();
+        const dur = ev.duration_s != null ? ev.duration_s : ((performance.now() - startedAt) / 1000).toFixed(1);
+        thought.classList.remove('thinking');
+        thought.classList.add('done');
+        titleEl.textContent = `Thought for ${dur}s`;
+        subEl.textContent = callCount > 0
+          ? `${callCount} tool step${callCount === 1 ? '' : 's'}`
+          : (reasoningText ? 'reasoning' : (eventCount > 0 ? `${eventCount} events` : 'direct reply'));
+        timerEl.textContent = '';
+        if (!reasoningText && eventCount === 0) {
+          stepsEl.innerHTML = '<div style="color:var(--muted);font-style:italic;">Direct response (no intermediate tool calls).</div>';
+        }
+        bodyEl.innerHTML = renderSimpleMd(ev.reply || contentText || '(empty)');
+        const totalTok = (ev.usage && ev.usage.total_tokens) || 0;
+        if (totalTok > 0) {
+          tokEl.textContent = `${totalTok.toLocaleString()} tok`;
+          tokEl.classList.remove('hidden');
+        }
+        if (ev.user_quota && meUser) {
+          meUser.tokens_used = ev.user_quota.tokens_used;
+          meUser.token_limit = ev.user_quota.token_limit;
+          renderUserHeader();
+        }
+        scrollChatIfPinned();
+      }
+    },
+    fail(msg) {
+      clearInterval(timerId);
+      cleanupScrollListeners();
+      thought.classList.remove('thinking');
+      thought.classList.add('err');
+      titleEl.textContent = 'Failed';
+      subEl.textContent = '';
+      timerEl.textContent = '';
+      bodyEl.innerHTML = `<span style="color:var(--red);">${esc(msg)}</span>`;
+    },
+  };
 }
 
 async function sendChat() {
@@ -1396,33 +1659,49 @@ async function sendChat() {
   pendingFiles = [];
   renderPendingChips();
 
+  const live = createLiveStreamingAssistantBubble();
+
   try {
     let r;
     if (filesCopy.length) {
       const fd = new FormData();
       fd.append('message', msg);
       filesCopy.forEach(f => fd.append('files', f));
-      r = await fetch('/api/v1/chat/upload', { method: 'POST', body: fd });
+      r = await fetch('/api/v1/chat/upload/stream', { method: 'POST', body: fd });
     } else {
-      r = await fetch('/api/v1/chat', {
+      r = await fetch('/api/v1/chat/stream', {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ message: msg }),
       });
     }
-    const d = await r.json().catch(() => ({}));
-    if (!r.ok) {
-      appendChatMessage({ role: 'assistant', content: `Error (${r.status}): ${d.detail || 'Request failed'}` });
-      if (d.logs) renderTrace(d.logs, 0);
+    if (!r.ok || !r.body) {
+      const d = await r.json().catch(() => ({}));
+      live.fail(`Error (${r.status}): ${d.detail || 'Request failed'}`);
       return;
     }
-    const totalTok = (d.usage && d.usage.total_tokens) || 0;
-    appendChatMessage({ role: 'assistant', content: d.reply, logs: d.logs || [], tokens_used: totalTok });
-    renderTrace(d.logs || [], totalTok);
-    if (d.user_quota) {
-      meUser.tokens_used = d.user_quota.tokens_used;
-      meUser.token_limit = d.user_quota.token_limit;
-      renderUserHeader();
+
+    const reader = r.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = '';
+    while (true) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+      let nl;
+      while ((nl = buffer.indexOf('\n')) !== -1) {
+        const line = buffer.slice(0, nl).trim();
+        buffer = buffer.slice(nl + 1);
+        if (!line) continue;
+        try {
+          live.onEvent(JSON.parse(line));
+        } catch {}
+      }
     }
+    if (buffer.trim()) {
+      try { live.onEvent(JSON.parse(buffer.trim())); } catch {}
+    }
+  } catch (e) {
+    live.fail(`Network error: ${e}`);
   } finally {
     $('sendBtn').disabled = meUser && meUser.status === 'restricted';
     $('sendBtn').textContent = 'Send';

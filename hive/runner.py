@@ -1,7 +1,7 @@
 """The tool-use loop shared by the orchestrator and every worker agent."""
 import json
 
-from .llm import chat
+from .llm import chat, emit_stream_event, set_stream_label
 
 TYPES = {
     "string": lambda v: isinstance(v, str),
@@ -60,10 +60,19 @@ def run_loop(base_url, model, messages, handlers, max_steps=8, log=print, label=
     Raises LLMError if the endpoint fails.
     """
     tools = tool_schemas(handlers) if handlers else None
-    for _ in range(max_steps):
+    for step_idx in range(max_steps):
+        set_stream_label(label)
+        emit_stream_event({
+            "type": "status",
+            "label": label,
+            "text": f"Thinking ({label.split(':', 1)[0]})…",
+            "step": step_idx + 1,
+        })
         content, calls, native, reasoning = chat(
             base_url, model, messages, tools=tools, api_key=api_key
         )
+        if reasoning and str(reasoning).strip():
+            log(f"[{label}] 💭 {_short(reasoning, 900)}")
         if not native:  # text-recovered calls only count if they name a real tool
             calls = [c for c in calls if c["name"] in handlers]
         if not calls:
@@ -80,12 +89,19 @@ def run_loop(base_url, model, messages, handlers, max_steps=8, log=print, label=
             asst_msg["reasoning_content"] = reasoning
         messages.append(asst_msg)
         for c in calls:
+            emit_stream_event({
+                "type": "status",
+                "label": label,
+                "text": f"Running {c['name']}…",
+            })
             log(f"[{label}] → {c['name']}({_short(c['arguments'])})")
             result = _execute(c, handlers)
             log(f"[{label}] ← {_short(result)}")
             messages.append({"role": "tool", "tool_call_id": c["id"], "content": result})
 
     log(f"[{label}] step limit ({max_steps}) reached; asking for a final answer")
+    set_stream_label(label)
+    emit_stream_event({"type": "status", "label": label, "text": "Synthesizing final answer…"})
     messages.append({"role": "user", "content":
                      "Step limit reached. Reply now with your best final answer. Do not call tools."})
     content, _, _, _ = chat(base_url, model, messages, api_key=api_key)

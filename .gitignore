@@ -4,6 +4,7 @@
 !.env.example
 config.toml
 !config.toml.example
+rp.md
 
 # Runtime state & sandbox
 agents.db

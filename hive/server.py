@@ -2,6 +2,7 @@
 import hmac
 import json
 import os
+import queue
 import re
 import threading
 import time
@@ -11,7 +12,7 @@ from typing import Literal, Optional
 
 from fastapi import Depends, FastAPI, File, Form, HTTPException, Query, Request, Response, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import HTMLResponse, JSONResponse
+from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
 from pydantic import BaseModel, Field
 
 from .channels.email_client import (
@@ -33,7 +34,14 @@ from .channels.whatsapp_client import (
     start_session as wa_start_session,
     stop_session as wa_stop_session,
 )
-from .llm import LLMError, finish_usage_tracking, start_usage_tracking
+from .llm import (
+    LLMError,
+    emit_stream_event,
+    finish_usage_tracking,
+    start_stream_emitter,
+    start_usage_tracking,
+    stop_stream_emitter,
+)
 from .orchestrator import NAME_RE
 from .registry import AgentSpec, SESSION_TTL_SECONDS, VALID_SCOPES
 from .scheduler import ALLOWED_INTERVAL_MINUTES, TaskScheduler, compute_next_run, validate_trigger
@@ -375,9 +383,11 @@ def create_app(orch, api_token: Optional[str] = None) -> FastAPI:
     orig_log = orch.log
 
     def _capture_log(msg):
+        s = str(msg)
         buf = getattr(tls, "logs", None)
         if buf is not None:
-            buf.append(str(msg))
+            buf.append(s)
+        emit_stream_event({"type": "trace", "line": s, "ts": time.time()})
         orig_log(msg)
 
     orch.log = _capture_log
@@ -827,6 +837,121 @@ def create_app(orch, api_token: Optional[str] = None) -> FastAPI:
         display_msg = msg_clean or f"Uploaded {len(saved_meta)} file(s) for review."
         prompt_msg = f"{display_msg}\n\n{files_block}" if files_block else display_msg
         return _run_chat_turn(caller, display_msg, prompt_msg, saved_meta, reset_before)
+
+    def _stream_chat_turn(caller: dict, display_message: str, prompt_message: str,
+                          attached_files: list[dict], reset_before: bool) -> StreamingResponse:
+        """Stream real-time NDJSON thinking/reasoning/tool-trace/content events for ChatGPT-style UI."""
+        _check_user_quota(caller)
+        ev_queue: queue.Queue = queue.Queue()
+        t0 = time.time()
+
+        def _worker():
+            user = caller.get("user")
+            tls.logs = []
+            start_usage_tracking()
+            start_stream_emitter(lambda ev: ev_queue.put(ev))
+            ev_queue.put({"type": "start", "ts": t0, "files": attached_files})
+            try:
+                with op_lock:
+                    if user:
+                        if reset_before:
+                            orch.reg.clear_chat_messages(user["id"])
+                        pairs = orch.reg.get_user_chat_pairs(
+                            user["id"], max_turns=orch.cfg["runtime"].get("history_turns", 6)
+                        )
+                        reply = orch.handle(prompt_message, history_override=pairs)
+                    else:
+                        if reset_before:
+                            orch.history.clear()
+                        reply = orch.handle(prompt_message)
+            except LLMError as e:
+                stop_stream_emitter()
+                usage = finish_usage_tracking()
+                if usage["total_tokens"] > 0:
+                    _record_caller_usage(caller, usage)
+                logs_err = list(tls.logs or [])
+                tls.logs = None
+                ev_queue.put({"type": "error", "detail": str(e), "logs": logs_err})
+                ev_queue.put(None)
+                return
+            except Exception as e:
+                stop_stream_emitter()
+                finish_usage_tracking()
+                logs_err = list(tls.logs or [])
+                tls.logs = None
+                ev_queue.put({"type": "error", "detail": f"{type(e).__name__}: {e}", "logs": logs_err})
+                ev_queue.put(None)
+                return
+
+            stop_stream_emitter()
+            duration_s = round(max(0.1, time.time() - t0), 1)
+            logs = list(tls.logs or [])
+            logs.insert(0, f"[meta] duration={duration_s}s")
+            tls.logs = None
+            usage = finish_usage_tracking()
+            quota = _record_caller_usage(caller, usage)
+            if user:
+                orch.reg.add_chat_message(user["id"], "user", display_message, files=attached_files)
+                orch.reg.add_chat_message(
+                    user["id"], "assistant", reply, logs=logs, tokens_used=usage.get("total_tokens", 0)
+                )
+            ev_queue.put({
+                "type": "done",
+                "reply": reply,
+                "logs": logs,
+                "files": attached_files,
+                "usage": usage,
+                "user_quota": quota,
+                "duration_s": duration_s,
+            })
+            ev_queue.put(None)
+
+        threading.Thread(target=_worker, name="hive-chat-stream", daemon=True).start()
+
+        def _iter_ndjson():
+            while True:
+                try:
+                    item = ev_queue.get(timeout=12.0)
+                except queue.Empty:
+                    yield json.dumps({"type": "ping", "ts": time.time()}) + "\n"
+                    continue
+                if item is None:
+                    break
+                yield json.dumps(item, ensure_ascii=False) + "\n"
+
+        return StreamingResponse(
+            _iter_ndjson(),
+            media_type="application/x-ndjson",
+            headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+        )
+
+    @app.post(
+        "/api/v1/chat/stream",
+        tags=["Orchestrator"],
+        summary="Stream real-time NDJSON thinking, tool trace, and answer events",
+    )
+    def chat_stream(req: ChatRequest, caller=Depends(require_scope("write"))):
+        return _stream_chat_turn(caller, req.message, req.message, [], req.reset_before)
+
+    @app.post(
+        "/api/v1/chat/upload/stream",
+        tags=["Orchestrator"],
+        summary="Stream real-time NDJSON thinking & answer events with .md/.txt/.csv file uploads",
+    )
+    async def chat_with_files_stream(
+        message: str = Form(""),
+        reset_before: bool = Form(False),
+        files: list[UploadFile] = File(default=[]),
+        caller=Depends(require_scope("write")),
+    ):
+        _check_user_quota(caller)
+        msg_clean = message.strip()
+        if not msg_clean and not files:
+            raise HTTPException(status_code=400, detail="Provide a message or at least one .md/.txt/.csv file.")
+        saved_meta, files_block = await _save_chat_uploads(files, caller["name"]) if files else ([], "")
+        display_msg = msg_clean or f"Uploaded {len(saved_meta)} file(s) for review."
+        prompt_msg = f"{display_msg}\n\n{files_block}" if files_block else display_msg
+        return _stream_chat_turn(caller, display_msg, prompt_msg, saved_meta, reset_before)
 
     @app.get(
         "/api/v1/chat/history",
