@@ -249,7 +249,55 @@ Live-switch the model/endpoint for the orchestrator, default workers, or a named
 *(`target` accepts `"orch"`, `"workers"`, or any existing agent name.)*
 
 #### `GET /api/v1/tools` *(Scope: `read`)*
-Returns all tools currently registered in `ToolLibrary` with descriptions and JSON parameter schemas.
+Returns all built-in and dynamically synthesized custom tools (including JSON schemas, creator model, source code, tests, and usage count).
+
+#### `POST /api/v1/tools/create` *(Scope: `write`)*
+Invoke the **Dynamic Tool Creator** (`deepseek-chat` / `[tool_creator]` flagship model) to synthesize, AST-verify, unit-test, repair, and permanently save a new reusable Python tool.
+```json
+{
+  "name": "csv_stats",
+  "description": "Compute mean, median, min, max for a CSV column",
+  "requirements": "Accept path and column; use ws_read(path); return Markdown table."
+}
+```
+
+#### `POST /api/v1/tools/{name}/test` *(Scope: `write`)*
+Execute any registered tool directly with `{"arguments": {...}}`.
+
+#### `DELETE /api/v1/tools/{name}` *(Scope: `admin`)*
+Delete a custom tool (built-in vetted tools cannot be deleted).
+
+---
+
+### Inbox — Email (Batch Drafts + Important Summary) & Personal WhatsApp (QR)
+
+#### `GET /api/v1/inbox/drafts` *(Scope: `read`)*
+List editable reply drafts (`?channel=email|whatsapp&status=pending|sent|dismissed`).
+
+#### `PATCH /api/v1/inbox/drafts/{draft_id}` *(Scope: `write`)*
+Edit `draft_subject`, `draft_reply`, or set `status` (`pending` / `dismissed`).
+
+#### `POST /api/v1/inbox/drafts/{draft_id}/send` *(Scope: `write`)*
+Send a single edited Email (SMTP) or WhatsApp (WAHA) reply and mark it `sent`.
+
+#### `POST /api/v1/inbox/drafts/send-batch` *(Scope: `write`)*
+Send multiple approved/edited drafts in one call: `{"draft_ids": ["drf_...", "..."]}`.
+
+#### `POST /api/v1/inbox/email/summarize` *(Scope: `write`)*
+Scan unread emails from the **last 100** INBOX messages, filter automated noise, and return a prioritized Markdown briefing (also saved to `workspace/output/email_digest/`).
+
+#### `POST /api/v1/inbox/email/batch-draft` *(Scope: `write`)*
+Scan unread emails from the **last 100** messages and batch-create editable reply drafts for all important/actionable emails at once (`{"scan_last": 100, "instructions": "concise, polite"}`).
+
+#### `GET` / `PUT /api/v1/inbox/email/config` *(Scope: `admin`)*
+Inspect (password masked) or save persisted IMAP/SMTP credentials in SQLite.
+
+#### Personal WhatsApp (WAHA QR Sidecar)
+Start the optional sidecar with `docker compose --profile whatsapp up -d`, then:
+- `GET /api/v1/inbox/whatsapp/status` *(read)* — WAHA session state (`STOPPED`, `SCAN_QR_CODE`, `WORKING`, `OFFLINE`)
+- `POST /api/v1/inbox/whatsapp/start` / `stop` *(admin)* — start/stop session and register webhook
+- `GET /api/v1/inbox/whatsapp/qr` *(admin)* — live QR PNG image to scan with WhatsApp → *Linked Devices*
+- `POST /api/v1/webhooks/whatsapp` — receives incoming personal WhatsApp messages from WAHA and creates editable reply drafts automatically
 
 ---
 
@@ -271,6 +319,58 @@ Creates or overwrites a text file in `workspace/`.
 
 #### `DELETE /api/v1/workspace/files/{file_path}` *(Scope: `admin`)*
 Deletes a file from `workspace/`.
+
+---
+
+### Task Scheduler (Persistent)
+
+Recurring jobs are persisted in SQLite (`scheduled_tasks` & `schedule_runs`), survive `docker restart`, enforce owner status & token quotas, and run in a background daemon thread.
+
+**Supported Triggers:**
+- `trigger_type: "interval"` — `interval_minutes` in **`5, 10, 15, 20, 30, 45, 60`** (5 min to 1 hour) or **`240, 480, 720, 960, 1200, 1440`** (4-hour increments: 4h, 8h, 12h, 16h, 20h, 24h)
+- `trigger_type: "daily"` — `daily_time` in 24-hour `HH:MM` format, optional `days_of_week` (`0`=Sun .. `6`=Sat), and `timezone_offset_minutes` (UTC offset in minutes, e.g. `+360` for UTC+6)
+
+#### `GET /api/v1/schedules` *(Scope: `read`)*
+List scheduled tasks (admins see all users' schedules; regular users see their own).
+
+#### `POST /api/v1/schedules` *(Scope: `write`)*
+Create a scheduled task targeting either `orchestrator` or a specific `worker` agent.
+```json
+{
+  "name": "Morning Digest",
+  "target_type": "orchestrator",
+  "prompt": "Summarize workspace updates into notes/morning.md",
+  "trigger_type": "daily",
+  "daily_time": "09:00",
+  "days_of_week": [1, 2, 3, 4, 5],
+  "timezone_offset_minutes": 360
+}
+```
+
+#### `PATCH /api/v1/schedules/{schedule_id}` *(Scope: `write`)*
+Pause/resume (`enabled: false/true`) or update trigger, prompt, or target.
+
+#### `POST /api/v1/schedules/{schedule_id}/run` *(Scope: `write`)*
+Immediately execute a scheduled task on demand and record the run.
+
+#### `GET /api/v1/schedules/{schedule_id}/runs` *(Scope: `read`)*
+Retrieve execution history (`status`, `result`, `logs`, `tokens_used`, timestamps) for a schedule.
+
+#### `DELETE /api/v1/schedules/{schedule_id}` *(Scope: `write` owner / `admin`)*
+Delete a scheduled task and its run history.
+
+*(Set `"notify_telegram": true` and/or `"notify_whatsapp": true` when creating or updating a schedule to push finished results straight to the owner's Telegram bot and/or WhatsApp.)*
+
+---
+
+### My Bots — Per-User Telegram Bot & WhatsApp Schedule Alerts
+
+Every signed-in user can configure their own personal Telegram bot (full control of `agent-hive` directly from Telegram via long-polling — no public HTTPS domain required) and their own WhatsApp phone number for receiving scheduled task notifications.
+
+- `GET /api/v1/me/channels` *(read)* — get current user's saved bot/WhatsApp settings, pairing `/link CODE`, and live Telegram worker status
+- `PUT /api/v1/me/channels` *(write)* — save `telegram_bot_token`, `telegram_chat_id`, `telegram_enabled`, `whatsapp_target`, `whatsapp_enabled` and immediately start/stop the user's Telegram bot worker
+- `POST /api/v1/me/channels/test-telegram` *(write)* — send a test message through the user's Telegram bot
+- `POST /api/v1/me/channels/test-whatsapp` *(write)* — send a test WhatsApp alert to the user's WhatsApp target (or WAHA linked self-chat)
 
 ---
 

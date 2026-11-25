@@ -82,8 +82,18 @@ def _load_runtime(cfg_arg=None):
     if not ws_path.is_absolute():
         ws_path = root / ws_path
 
+    ct_raw = (
+        os.environ.get("HIVE_CUSTOM_TOOLS_DIR")
+        or cfg.get("tool_creator", {}).get("tools_dir")
+        or str(db_path.parent / "custom_tools")
+    )
+    ct_path = Path(ct_raw)
+    if not ct_path.is_absolute():
+        ct_path = root / ct_path
+
     allow_python = _env_bool("HIVE_ALLOW_PYTHON", rt.get("allow_python", False))
-    return cfg, Registry(db_path), ToolLibrary(ws_path, allow_python)
+    reg = Registry(db_path)
+    return cfg, reg, ToolLibrary(ws_path, allow_python, registry=reg, custom_tools_dir=ct_path)
 
 
 def _handle_key_cli(argv):

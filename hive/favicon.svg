@@ -1,0 +1,20 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
+  <defs>
+    <linearGradient id="bg" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#0f172a"/>
+      <stop offset="100%" stop-color="#1e293b"/>
+    </linearGradient>
+    <linearGradient id="hex" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#60a5fa"/>
+      <stop offset="55%" stop-color="#6366f1"/>
+      <stop offset="100%" stop-color="#34d399"/>
+    </linearGradient>
+  </defs>
+  <rect width="64" height="64" rx="14" fill="url(#bg)"/>
+  <!-- Outer hive hexagon -->
+  <polygon points="32,8 53,20 53,44 32,56 11,44 11,20" fill="none" stroke="url(#hex)" stroke-width="3.5" stroke-linejoin="round"/>
+  <!-- Inner honeycomb cluster (3 connected agent nodes) -->
+  <polygon points="32,17 40,21.5 40,30.5 32,35 24,30.5 24,21.5" fill="url(#hex)" opacity="0.92"/>
+  <polygon points="23,32 30,36 30,44 23,48 16,44 16,36" fill="#60a5fa" opacity="0.75"/>
+  <polygon points="41,32 48,36 48,44 41,48 34,44 34,36" fill="#34d399" opacity="0.8"/>
+</svg>

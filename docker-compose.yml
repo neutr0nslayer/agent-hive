@@ -13,8 +13,12 @@ services:
       HIVE_PORT: "8000"
       HIVE_DB_PATH: /data/agents.db
       HIVE_WORKSPACE: /data/workspace
+      HIVE_CUSTOM_TOOLS_DIR: /data/custom_tools
       HIVE_ALLOW_PYTHON: "${HIVE_ALLOW_PYTHON:-false}"
       HIVE_API_TOKEN: "${HIVE_API_TOKEN:-}"
+      WAHA_URL: "${WAHA_URL:-http://waha:3000}"
+      WAHA_API_KEY: "${WAHA_API_KEY:-hive_waha_internal_key}"
+      WAHA_WEBHOOK_URL: "${WAHA_WEBHOOK_URL:-http://agent-hive:8000/api/v1/webhooks/whatsapp}"
     volumes:
       - hive_data:/data
       # Uncomment to mount a custom config.toml from your host:
@@ -65,5 +69,18 @@ services:
     security_opt:
       - no-new-privileges:true
 
+  waha:
+    image: devlikeapro/waha:latest
+    profiles: ["whatsapp"]
+    restart: unless-stopped
+    environment:
+      WAHA_PRINT_QR: "true"
+      WHATSAPP_DEFAULT_ENGINE: "NOWEB"
+      WHATSAPP_RESTART_ALL_SESSIONS: "true"
+      WAHA_API_KEY: "${WAHA_API_KEY:-hive_waha_internal_key}"
+    volumes:
+      - waha_sessions:/app/.sessions
+
 volumes:
   hive_data:
+  waha_sessions:

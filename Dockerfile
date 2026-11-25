@@ -4,6 +4,7 @@ ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
     HIVE_DB_PATH=/data/agents.db \
     HIVE_WORKSPACE=/data/workspace \
+    HIVE_CUSTOM_TOOLS_DIR=/data/custom_tools \
     HIVE_HOST=0.0.0.0 \
     HIVE_PORT=8000
 
@@ -14,7 +15,7 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 # Create a non-root user and persistent data/workspace directories
 RUN adduser --disabled-password --gecos "" --uid 1000 hive \
-    && mkdir -p /data/workspace \
+    && mkdir -p /data/workspace /data/custom_tools \
     && chown -R hive:hive /app /data
 
 COPY --chown=hive:hive main.py config.toml.example ./

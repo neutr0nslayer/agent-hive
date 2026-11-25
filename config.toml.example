@@ -23,6 +23,12 @@ use_local_fallback = false  # set to true to fall back to a local server if prim
 fallback_endpoint = ""      # endpoint name to use when use_local_fallback = true
 fallback_model = ""         # optional model override when falling back (defaults to worker model)
 
+[tool_creator]
+endpoint = "deepseek"       # highest-capability endpoint for synthesizing reusable custom tools
+model = "v4"                # resolves to deepseek-chat
+max_repair_attempts = 3     # self-repair iterations if generated unit tests fail
+tools_dir = "custom_tools"  # folder mirroring persisted custom Python tools
+
 [runtime]
 max_steps = 8               # tool-call steps per task before the agent must answer
 workspace = "workspace"     # sandbox folder for agents' file tools

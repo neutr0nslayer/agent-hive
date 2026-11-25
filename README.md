@@ -118,7 +118,7 @@ Only you can delete agents, using `/delete`. The orchestrator has no delete tool
 ## Docker Deployment, Studio GUI & REST API
 
 `agent-hive` ships with a non-root `Dockerfile`, `docker-compose.yml`, and a **FastAPI** server providing:
-- **Studio GUI** (`/`) — Sign In / Sign Up, Chatbox with drag-and-drop **`.md` / `.txt` / `.csv` file uploads** & live orchestration trace, Worker Agent Studio, Workspace File Editor, Task History, **Admin Dashboard** (revoke/restrict users, per-user token limits, persisted policies & live model switcher, API key generator & distribution), and built-in API Playground.
+- **Studio GUI** (`/`) — Sign In / Sign Up, Chatbox with drag-and-drop **`.md` / `.txt` / `.csv` file uploads** & live orchestration trace, **Inbox** (Email important unread summarizer from last 100, multi-email batch draft prep, inline edit & send, and **Personal WhatsApp QR pairing** via WAHA), **Tool Forge** (Dynamic Tool Creator powered by `deepseek-chat` with AST checks, automated tests & persistence), Worker Agent Studio, Workspace File Editor with **full Markdown & CSV preview**, **Task Scheduler** page, Task History, **Admin Dashboard**, and built-in API Playground.
 - **API Docs** — **Swagger UI** (`/docs`), **ReDoc** (`/redoc`), **OpenAPI 3.1** (`/openapi.json`), and **[API_DOCUMENTATION.md](API_DOCUMENTATION.md)**.
 - **Full Persistence** — Users, sessions, chat histories, uploaded files, token usage, agents, tasks, API keys, and settings are all stored in `/data` (`hive_data` Docker volume) and survive `docker restart`.
 

@@ -86,6 +86,92 @@ CREATE TABLE IF NOT EXISTS settings (
     key TEXT PRIMARY KEY,
     value TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS scheduled_tasks (
+    id TEXT PRIMARY KEY,
+    user_id TEXT,
+    owner_name TEXT NOT NULL,
+    name TEXT NOT NULL,
+    target_type TEXT NOT NULL DEFAULT 'orchestrator',
+    agent_name TEXT NOT NULL DEFAULT '',
+    prompt TEXT NOT NULL,
+    trigger_type TEXT NOT NULL,
+    interval_minutes INTEGER,
+    daily_time TEXT,
+    days_of_week TEXT NOT NULL DEFAULT '[0,1,2,3,4,5,6]',
+    timezone_offset_minutes INTEGER NOT NULL DEFAULT 0,
+    enabled INTEGER NOT NULL DEFAULT 1,
+    next_run_at REAL,
+    last_run_at REAL,
+    last_status TEXT NOT NULL DEFAULT 'idle',
+    last_result TEXT NOT NULL DEFAULT '',
+    last_error TEXT NOT NULL DEFAULT '',
+    run_count INTEGER NOT NULL DEFAULT 0,
+    notify_telegram INTEGER NOT NULL DEFAULT 0,
+    notify_whatsapp INTEGER NOT NULL DEFAULT 0,
+    created_at REAL NOT NULL,
+    updated_at REAL NOT NULL
+);
+CREATE TABLE IF NOT EXISTS schedule_runs (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    schedule_id TEXT NOT NULL,
+    status TEXT NOT NULL,
+    result TEXT NOT NULL DEFAULT '',
+    logs_json TEXT NOT NULL DEFAULT '[]',
+    tokens_used INTEGER NOT NULL DEFAULT 0,
+    started_at REAL NOT NULL,
+    finished_at REAL,
+    FOREIGN KEY(schedule_id) REFERENCES scheduled_tasks(id) ON DELETE CASCADE
+);
+CREATE TABLE IF NOT EXISTS custom_tools (
+    name TEXT PRIMARY KEY,
+    description TEXT NOT NULL,
+    schema_json TEXT NOT NULL,
+    code TEXT NOT NULL,
+    tests TEXT NOT NULL,
+    created_by_model TEXT NOT NULL,
+    created_by_user TEXT NOT NULL DEFAULT 'orchestrator',
+    use_count INTEGER NOT NULL DEFAULT 0,
+    created_at REAL NOT NULL,
+    updated_at REAL NOT NULL
+);
+CREATE TABLE IF NOT EXISTS inbox_drafts (
+    id TEXT PRIMARY KEY,
+    channel TEXT NOT NULL,
+    external_id TEXT NOT NULL DEFAULT '',
+    sender_name TEXT NOT NULL,
+    sender_addr TEXT NOT NULL,
+    subject TEXT NOT NULL DEFAULT '',
+    in_reply_to TEXT NOT NULL DEFAULT '',
+    incoming_body TEXT NOT NULL DEFAULT '',
+    priority TEXT NOT NULL DEFAULT 'medium',
+    summary TEXT NOT NULL DEFAULT '',
+    draft_subject TEXT NOT NULL DEFAULT '',
+    draft_reply TEXT NOT NULL DEFAULT '',
+    status TEXT NOT NULL DEFAULT 'pending',
+    error TEXT NOT NULL DEFAULT '',
+    created_at REAL NOT NULL,
+    updated_at REAL NOT NULL,
+    sent_at REAL
+);
+CREATE TABLE IF NOT EXISTS whatsapp_messages (
+    id TEXT PRIMARY KEY,
+    chat_id TEXT NOT NULL,
+    sender_name TEXT NOT NULL,
+    body TEXT NOT NULL,
+    is_read INTEGER NOT NULL DEFAULT 0,
+    received_at REAL NOT NULL
+);
+CREATE TABLE IF NOT EXISTS user_channels (
+    user_id TEXT PRIMARY KEY,
+    telegram_bot_token TEXT NOT NULL DEFAULT '',
+    telegram_chat_id TEXT NOT NULL DEFAULT '',
+    telegram_enabled INTEGER NOT NULL DEFAULT 0,
+    telegram_link_code TEXT NOT NULL DEFAULT '',
+    whatsapp_target TEXT NOT NULL DEFAULT '',
+    whatsapp_enabled INTEGER NOT NULL DEFAULT 0,
+    updated_at REAL NOT NULL,
+    FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE
+);
 """
 
 
@@ -141,6 +227,17 @@ class Registry:
         self.db.execute("PRAGMA journal_mode=WAL")
         self.db.execute("PRAGMA busy_timeout=5000")
         self.db.executescript(SCHEMA)
+        self._migrate()
+
+    def _migrate(self):
+        """Non-destructive schema migrations for existing SQLite databases."""
+        with self._lock:
+            cols = {r["name"] for r in self.db.execute("PRAGMA table_info(scheduled_tasks)")}
+            if "notify_telegram" not in cols:
+                self.db.execute("ALTER TABLE scheduled_tasks ADD COLUMN notify_telegram INTEGER NOT NULL DEFAULT 0")
+            if "notify_whatsapp" not in cols:
+                self.db.execute("ALTER TABLE scheduled_tasks ADD COLUMN notify_whatsapp INTEGER NOT NULL DEFAULT 0")
+            self.db.commit()
 
     # --- settings (persisted across container restarts) ----------------------
     def get_setting(self, key: str, default=None):
@@ -636,3 +733,479 @@ class Registry:
             self.db.commit()
             r2 = self.db.execute("SELECT * FROM api_keys WHERE id=?", (r["id"],)).fetchone()
             return self._key_row(r2)
+
+    # --- scheduled tasks -----------------------------------------------------
+    @staticmethod
+    def _schedule_row(r) -> dict:
+        return {
+            "id": r["id"],
+            "user_id": r["user_id"],
+            "owner_name": r["owner_name"],
+            "name": r["name"],
+            "target_type": r["target_type"],
+            "agent_name": r["agent_name"],
+            "prompt": r["prompt"],
+            "trigger_type": r["trigger_type"],
+            "interval_minutes": r["interval_minutes"],
+            "daily_time": r["daily_time"],
+            "days_of_week": json.loads(r["days_of_week"] or "[0,1,2,3,4,5,6]"),
+            "timezone_offset_minutes": r["timezone_offset_minutes"],
+            "enabled": bool(r["enabled"]),
+            "next_run_at": r["next_run_at"],
+            "last_run_at": r["last_run_at"],
+            "last_status": r["last_status"],
+            "last_result": r["last_result"],
+            "last_error": r["last_error"],
+            "run_count": r["run_count"],
+            "notify_telegram": bool(r["notify_telegram"]) if "notify_telegram" in r.keys() else False,
+            "notify_whatsapp": bool(r["notify_whatsapp"]) if "notify_whatsapp" in r.keys() else False,
+            "created_at": r["created_at"],
+            "updated_at": r["updated_at"],
+        }
+
+    def create_schedule(
+        self,
+        *,
+        user_id,
+        owner_name: str,
+        name: str,
+        target_type: str,
+        agent_name: str,
+        prompt: str,
+        trigger_type: str,
+        interval_minutes,
+        daily_time,
+        days_of_week: list[int],
+        timezone_offset_minutes: int,
+        enabled: bool,
+        next_run_at,
+        notify_telegram: bool = False,
+        notify_whatsapp: bool = False,
+    ) -> dict:
+        sid = f"sch_{secrets.token_hex(6)}"
+        now = time.time()
+        with self._lock:
+            self.db.execute(
+                "INSERT INTO scheduled_tasks (id, user_id, owner_name, name, target_type, agent_name, "
+                "prompt, trigger_type, interval_minutes, daily_time, days_of_week, timezone_offset_minutes, "
+                "enabled, next_run_at, notify_telegram, notify_whatsapp, created_at, updated_at) "
+                "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                (
+                    sid, user_id, owner_name, name, target_type, agent_name,
+                    prompt, trigger_type, interval_minutes, daily_time,
+                    json.dumps(days_of_week), int(timezone_offset_minutes),
+                    1 if enabled else 0, next_run_at,
+                    1 if notify_telegram else 0, 1 if notify_whatsapp else 0,
+                    now, now,
+                ),
+            )
+            self.db.commit()
+            r = self.db.execute("SELECT * FROM scheduled_tasks WHERE id=?", (sid,)).fetchone()
+            return self._schedule_row(r)
+
+    def get_schedule(self, schedule_id: str):
+        with self._lock:
+            r = self.db.execute("SELECT * FROM scheduled_tasks WHERE id=?", (schedule_id,)).fetchone()
+            return self._schedule_row(r) if r else None
+
+    def list_schedules(self, user_id=None) -> list[dict]:
+        with self._lock:
+            if user_id is not None:
+                rows = self.db.execute(
+                    "SELECT * FROM scheduled_tasks WHERE user_id=? ORDER BY created_at DESC",
+                    (user_id,),
+                )
+            else:
+                rows = self.db.execute("SELECT * FROM scheduled_tasks ORDER BY created_at DESC")
+            return [self._schedule_row(r) for r in rows]
+
+    def update_schedule(self, schedule_id: str, fields: dict):
+        if not fields:
+            return self.get_schedule(schedule_id)
+        allowed = {
+            "name", "target_type", "agent_name", "prompt", "trigger_type",
+            "interval_minutes", "daily_time", "days_of_week", "timezone_offset_minutes",
+            "enabled", "next_run_at", "last_run_at", "last_status", "last_result",
+            "last_error", "run_count", "notify_telegram", "notify_whatsapp",
+        }
+        cols, vals = [], []
+        for k, v in fields.items():
+            if k not in allowed:
+                continue
+            if k == "days_of_week":
+                v = json.dumps(v)
+            elif k in ("enabled", "notify_telegram", "notify_whatsapp"):
+                v = 1 if v else 0
+            cols.append(f"{k}=?")
+            vals.append(v)
+        if not cols:
+            return self.get_schedule(schedule_id)
+        cols.append("updated_at=?")
+        vals.append(time.time())
+        vals.append(schedule_id)
+        with self._lock:
+            n = self.db.execute(
+                f"UPDATE scheduled_tasks SET {', '.join(cols)} WHERE id=?", vals
+            ).rowcount
+            self.db.commit()
+            if n == 0:
+                return None
+            r = self.db.execute("SELECT * FROM scheduled_tasks WHERE id=?", (schedule_id,)).fetchone()
+            return self._schedule_row(r)
+
+    def delete_schedule(self, schedule_id: str) -> bool:
+        with self._lock:
+            n = self.db.execute("DELETE FROM scheduled_tasks WHERE id=?", (schedule_id,)).rowcount
+            self.db.commit()
+            return n > 0
+
+    def list_due_schedules(self, now_ts: float) -> list[dict]:
+        with self._lock:
+            rows = self.db.execute(
+                "SELECT * FROM scheduled_tasks WHERE enabled=1 AND next_run_at IS NOT NULL "
+                "AND next_run_at <= ? AND last_status != 'running' ORDER BY next_run_at ASC",
+                (now_ts,),
+            )
+            return [self._schedule_row(r) for r in rows]
+
+    def record_schedule_run(self, schedule_id: str, status: str, result: str, logs: list,
+                            tokens_used: int, started_at: float, finished_at: float) -> dict:
+        with self._lock:
+            cur = self.db.execute(
+                "INSERT INTO schedule_runs (schedule_id, status, result, logs_json, tokens_used, started_at, finished_at) "
+                "VALUES (?,?,?,?,?,?,?)",
+                (schedule_id, status, result, json.dumps(logs or []), int(tokens_used), started_at, finished_at),
+            )
+            self.db.commit()
+            return {
+                "id": cur.lastrowid,
+                "schedule_id": schedule_id,
+                "status": status,
+                "result": result,
+                "logs": logs or [],
+                "tokens_used": int(tokens_used),
+                "started_at": started_at,
+                "finished_at": finished_at,
+            }
+
+    def list_schedule_runs(self, schedule_id: str, limit: int = 30) -> list[dict]:
+        with self._lock:
+            rows = self.db.execute(
+                "SELECT * FROM schedule_runs WHERE schedule_id=? ORDER BY id DESC LIMIT ?",
+                (schedule_id, limit),
+            )
+            return [
+                {
+                    "id": r["id"],
+                    "schedule_id": r["schedule_id"],
+                    "status": r["status"],
+                    "result": r["result"],
+                    "logs": json.loads(r["logs_json"] or "[]"),
+                    "tokens_used": r["tokens_used"],
+                    "started_at": r["started_at"],
+                    "finished_at": r["finished_at"],
+                }
+                for r in rows
+            ]
+
+    # --- custom tools (dynamic tool creator persistence) ---------------------
+    @staticmethod
+    def _custom_tool_row(r) -> dict:
+        return {
+            "name": r["name"],
+            "description": r["description"],
+            "parameters": json.loads(r["schema_json"]),
+            "code": r["code"],
+            "tests": r["tests"],
+            "created_by_model": r["created_by_model"],
+            "created_by_user": r["created_by_user"],
+            "use_count": r["use_count"],
+            "created_at": r["created_at"],
+            "updated_at": r["updated_at"],
+        }
+
+    def save_custom_tool(self, *, name: str, description: str, schema: dict, code: str, tests: str,
+                         created_by_model: str, created_by_user: str = "orchestrator") -> dict:
+        now = time.time()
+        with self._lock:
+            self.db.execute(
+                "INSERT INTO custom_tools (name, description, schema_json, code, tests, "
+                "created_by_model, created_by_user, created_at, updated_at) VALUES (?,?,?,?,?,?,?,?,?) "
+                "ON CONFLICT(name) DO UPDATE SET description=excluded.description, "
+                "schema_json=excluded.schema_json, code=excluded.code, tests=excluded.tests, "
+                "created_by_model=excluded.created_by_model, updated_at=excluded.updated_at",
+                (name, description, json.dumps(schema), code, tests, created_by_model, created_by_user, now, now),
+            )
+            self.db.commit()
+            r = self.db.execute("SELECT * FROM custom_tools WHERE name=?", (name,)).fetchone()
+            return self._custom_tool_row(r)
+
+    def get_custom_tool(self, name: str):
+        with self._lock:
+            r = self.db.execute("SELECT * FROM custom_tools WHERE name=?", (name,)).fetchone()
+            return self._custom_tool_row(r) if r else None
+
+    def list_custom_tools(self) -> list[dict]:
+        with self._lock:
+            rows = self.db.execute("SELECT * FROM custom_tools ORDER BY name ASC")
+            return [self._custom_tool_row(r) for r in rows]
+
+    def delete_custom_tool(self, name: str) -> bool:
+        with self._lock:
+            n = self.db.execute("DELETE FROM custom_tools WHERE name=?", (name,)).rowcount
+            self.db.commit()
+            return n > 0
+
+    def bump_custom_tool_use(self, name: str):
+        with self._lock:
+            self.db.execute("UPDATE custom_tools SET use_count=use_count+1 WHERE name=?", (name,))
+            self.db.commit()
+
+    # --- inbox drafts (Email & WhatsApp editable approval queue) -------------
+    @staticmethod
+    def _draft_row(r) -> dict:
+        return {
+            "id": r["id"],
+            "channel": r["channel"],
+            "external_id": r["external_id"],
+            "sender_name": r["sender_name"],
+            "sender_addr": r["sender_addr"],
+            "subject": r["subject"],
+            "in_reply_to": r["in_reply_to"],
+            "incoming_body": r["incoming_body"],
+            "priority": r["priority"],
+            "summary": r["summary"],
+            "draft_subject": r["draft_subject"],
+            "draft_reply": r["draft_reply"],
+            "status": r["status"],
+            "error": r["error"],
+            "created_at": r["created_at"],
+            "updated_at": r["updated_at"],
+            "sent_at": r["sent_at"],
+        }
+
+    def find_draft_by_external_id(self, channel: str, external_id: str):
+        if not external_id:
+            return None
+        with self._lock:
+            r = self.db.execute(
+                "SELECT * FROM inbox_drafts WHERE channel=? AND external_id=? LIMIT 1",
+                (channel, external_id),
+            ).fetchone()
+            return self._draft_row(r) if r else None
+
+    def create_inbox_draft(
+        self,
+        *,
+        channel: str,
+        sender_name: str,
+        sender_addr: str,
+        incoming_body: str,
+        draft_reply: str,
+        external_id: str = "",
+        subject: str = "",
+        in_reply_to: str = "",
+        priority: str = "medium",
+        summary: str = "",
+        draft_subject: str = "",
+    ) -> dict:
+        now = time.time()
+        did = f"drf_{secrets.token_hex(6)}"
+        with self._lock:
+            if external_id:
+                existing = self.db.execute(
+                    "SELECT * FROM inbox_drafts WHERE channel=? AND external_id=? LIMIT 1",
+                    (channel, external_id),
+                ).fetchone()
+                if existing and existing["status"] == "pending":
+                    self.db.execute(
+                        "UPDATE inbox_drafts SET priority=?, summary=?, draft_subject=?, draft_reply=?, updated_at=? WHERE id=?",
+                        (priority, summary, draft_subject or existing["draft_subject"], draft_reply, now, existing["id"]),
+                    )
+                    self.db.commit()
+                    r = self.db.execute("SELECT * FROM inbox_drafts WHERE id=?", (existing["id"],)).fetchone()
+                    return self._draft_row(r)
+            self.db.execute(
+                "INSERT INTO inbox_drafts (id, channel, external_id, sender_name, sender_addr, subject, "
+                "in_reply_to, incoming_body, priority, summary, draft_subject, draft_reply, status, "
+                "created_at, updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                (
+                    did, channel, external_id, sender_name, sender_addr, subject,
+                    in_reply_to, incoming_body, priority, summary,
+                    draft_subject or (f"Re: {subject}" if subject and not subject.lower().startswith("re:") else subject),
+                    draft_reply, "pending", now, now,
+                ),
+            )
+            self.db.commit()
+            r = self.db.execute("SELECT * FROM inbox_drafts WHERE id=?", (did,)).fetchone()
+            return self._draft_row(r)
+
+    def get_inbox_draft(self, draft_id: str):
+        with self._lock:
+            r = self.db.execute("SELECT * FROM inbox_drafts WHERE id=?", (draft_id,)).fetchone()
+            return self._draft_row(r) if r else None
+
+    def list_inbox_drafts(self, channel=None, status=None, limit: int = 100) -> list[dict]:
+        clauses, params = [], []
+        if channel:
+            clauses.append("channel=?")
+            params.append(channel)
+        if status:
+            clauses.append("status=?")
+            params.append(status)
+        where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+        params.append(limit)
+        with self._lock:
+            rows = self.db.execute(
+                f"SELECT * FROM inbox_drafts {where} ORDER BY created_at DESC LIMIT ?", params
+            )
+            return [self._draft_row(r) for r in rows]
+
+    def update_inbox_draft(self, draft_id: str, fields: dict):
+        allowed = {"draft_subject", "draft_reply", "status", "error", "sent_at", "priority", "summary"}
+        cols, vals = [], []
+        for k, v in fields.items():
+            if k in allowed:
+                cols.append(f"{k}=?")
+                vals.append(v)
+        if not cols:
+            return self.get_inbox_draft(draft_id)
+        cols.append("updated_at=?")
+        vals.append(time.time())
+        vals.append(draft_id)
+        with self._lock:
+            n = self.db.execute(f"UPDATE inbox_drafts SET {', '.join(cols)} WHERE id=?", vals).rowcount
+            self.db.commit()
+            if n == 0:
+                return None
+            r = self.db.execute("SELECT * FROM inbox_drafts WHERE id=?", (draft_id,)).fetchone()
+            return self._draft_row(r)
+
+    def delete_inbox_draft(self, draft_id: str) -> bool:
+        with self._lock:
+            n = self.db.execute("DELETE FROM inbox_drafts WHERE id=?", (draft_id,)).rowcount
+            self.db.commit()
+            return n > 0
+
+    # --- incoming WhatsApp unread messages log -------------------------------
+    def save_whatsapp_message(self, msg_id: str, chat_id: str, sender_name: str, body: str) -> dict:
+        mid = (msg_id or f"wa_{secrets.token_hex(6)}").strip()
+        now = time.time()
+        with self._lock:
+            self.db.execute(
+                "INSERT OR IGNORE INTO whatsapp_messages (id, chat_id, sender_name, body, is_read, received_at) "
+                "VALUES (?,?,?,?,0,?)",
+                (mid, chat_id, sender_name, body, now),
+            )
+            self.db.commit()
+        return {"id": mid, "chat_id": chat_id, "sender_name": sender_name, "body": body, "received_at": now}
+
+    def list_unread_whatsapp_messages(self, limit: int = 100) -> list[dict]:
+        with self._lock:
+            rows = self.db.execute(
+                "SELECT * FROM whatsapp_messages WHERE is_read=0 ORDER BY received_at DESC LIMIT ?",
+                (limit,),
+            )
+            return [
+                {
+                    "id": r["id"],
+                    "chat_id": r["chat_id"],
+                    "sender_name": r["sender_name"],
+                    "unread_count": 1,
+                    "body": r["body"],
+                    "timestamp": r["received_at"],
+                    "source": "webhook",
+                }
+                for r in rows
+            ]
+
+    def mark_whatsapp_read(self, msg_id: str = None, chat_id: str = None):
+        with self._lock:
+            if msg_id:
+                self.db.execute("UPDATE whatsapp_messages SET is_read=1 WHERE id=?", (msg_id,))
+            if chat_id:
+                self.db.execute("UPDATE whatsapp_messages SET is_read=1 WHERE chat_id=?", (chat_id,))
+            self.db.commit()
+
+    # --- per-user bot & notification channel settings ------------------------
+    @staticmethod
+    def _user_channel_row(r, include_secret: bool = False) -> dict:
+        tok = r["telegram_bot_token"] or ""
+        out = {
+            "user_id": r["user_id"],
+            "has_telegram_token": bool(tok),
+            "telegram_token_hint": (f"{tok[:8]}...{tok[-4:]}" if len(tok) > 14 else ("***" if tok else "")),
+            "telegram_chat_id": r["telegram_chat_id"] or "",
+            "telegram_enabled": bool(r["telegram_enabled"]),
+            "telegram_link_code": r["telegram_link_code"] or "",
+            "whatsapp_target": r["whatsapp_target"] or "",
+            "whatsapp_enabled": bool(r["whatsapp_enabled"]),
+            "updated_at": r["updated_at"],
+        }
+        if include_secret:
+            out["telegram_bot_token"] = tok
+        return out
+
+    def get_user_channels(self, user_id: str, include_secret: bool = False) -> dict:
+        with self._lock:
+            r = self.db.execute("SELECT * FROM user_channels WHERE user_id=?", (user_id,)).fetchone()
+            if not r:
+                code = secrets.token_hex(4).upper()
+                now = time.time()
+                self.db.execute(
+                    "INSERT INTO user_channels (user_id, telegram_link_code, updated_at) VALUES (?,?,?)",
+                    (user_id, code, now),
+                )
+                self.db.commit()
+                r = self.db.execute("SELECT * FROM user_channels WHERE user_id=?", (user_id,)).fetchone()
+            return self._user_channel_row(r, include_secret=include_secret)
+
+    def save_user_channels(
+        self,
+        user_id: str,
+        *,
+        telegram_bot_token=None,
+        clear_telegram_token: bool = False,
+        telegram_chat_id=None,
+        telegram_enabled=None,
+        regenerate_link_code: bool = False,
+        whatsapp_target=None,
+        whatsapp_enabled=None,
+    ) -> dict:
+        cur = self.get_user_channels(user_id, include_secret=True)
+        tok = "" if clear_telegram_token else (
+            telegram_bot_token.strip() if (telegram_bot_token is not None and telegram_bot_token.strip() != "")
+            else cur["telegram_bot_token"]
+        )
+        chat_id = cur["telegram_chat_id"] if telegram_chat_id is None else str(telegram_chat_id).strip()
+        tg_en = cur["telegram_enabled"] if telegram_enabled is None else bool(telegram_enabled)
+        code = secrets.token_hex(4).upper() if (regenerate_link_code or not cur["telegram_link_code"]) else cur["telegram_link_code"]
+        wa_target = cur["whatsapp_target"] if whatsapp_target is None else str(whatsapp_target).strip()
+        wa_en = cur["whatsapp_enabled"] if whatsapp_enabled is None else bool(whatsapp_enabled)
+        now = time.time()
+        with self._lock:
+            self.db.execute(
+                "UPDATE user_channels SET telegram_bot_token=?, telegram_chat_id=?, telegram_enabled=?, "
+                "telegram_link_code=?, whatsapp_target=?, whatsapp_enabled=?, updated_at=? WHERE user_id=?",
+                (tok, chat_id, 1 if tg_en else 0, code, wa_target, 1 if wa_en else 0, now, user_id),
+            )
+            self.db.commit()
+            r = self.db.execute("SELECT * FROM user_channels WHERE user_id=?", (user_id,)).fetchone()
+            return self._user_channel_row(r, include_secret=False)
+
+    def list_enabled_telegram_users(self) -> list[dict]:
+        with self._lock:
+            rows = self.db.execute(
+                "SELECT c.*, u.username, u.status AS user_status FROM user_channels c "
+                "JOIN users u ON u.id=c.user_id "
+                "WHERE c.telegram_enabled=1 AND c.telegram_bot_token != '' AND u.status != 'revoked'"
+            )
+            out = []
+            for r in rows:
+                d = self._user_channel_row(r, include_secret=True)
+                d["username"] = r["username"]
+                d["user_status"] = r["user_status"]
+                out.append(d)
+            return out
+
+

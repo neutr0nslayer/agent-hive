@@ -4,6 +4,8 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>agent-hive Studio</title>
+  <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+  <link rel="alternate icon" href="/favicon.ico" />
   <style>
     :root {
       --bg: #0a0e17;
@@ -315,8 +317,12 @@
 
     <div class="tabs">
       <button class="tab active" data-tab="chat" onclick="showTab('chat', this)">Chat</button>
+      <button class="tab" data-tab="inbox" onclick="showTab('inbox', this)">Inbox</button>
       <button class="tab" data-tab="agents" onclick="showTab('agents', this)">Agents</button>
+      <button class="tab" data-tab="tools" onclick="showTab('tools', this)">Tool Forge</button>
       <button class="tab" data-tab="workspace" onclick="showTab('workspace', this)">Workspace</button>
+      <button class="tab" data-tab="scheduler" onclick="showTab('scheduler', this)">Scheduler</button>
+      <button class="tab" data-tab="mybots" onclick="showTab('mybots', this)">My Bots</button>
       <button class="tab" data-tab="tasks" onclick="showTab('tasks', this)">Tasks</button>
       <button class="tab hidden" id="adminTabBtn" data-tab="admin" onclick="showTab('admin', this)">Admin Dashboard</button>
       <button class="tab" data-tab="apidocs" onclick="showTab('apidocs', this)">API Docs</button>
@@ -359,6 +365,167 @@
       </div>
     </section>
 
+    <!-- TAB: INBOX (SEPARATED EMAIL & WHATSAPP SUB-TABS + ALL UNREAD VIEWERS) -->
+    <section id="tab-inbox" class="panel">
+      <div class="row" style="margin-bottom:14px;align-items:center;justify-content:space-between;">
+        <div class="ws-modes">
+          <button type="button" id="inboxSubBtnEmail" class="active" onclick="showInboxSub('email')">Email</button>
+          <button type="button" id="inboxSubBtnWhatsapp" onclick="showInboxSub('whatsapp')">WhatsApp</button>
+        </div>
+        <div style="display:flex;gap:8px;align-items:center;">
+          <span id="emailCfgBadge" class="badge">email: …</span>
+          <span id="waStatusBadge" class="badge">whatsapp: …</span>
+        </div>
+      </div>
+
+      <!-- ===== INBOX SUB-TAB: EMAIL ===== -->
+      <div id="inbox-sub-email">
+        <div class="card" style="margin-bottom:16px;">
+          <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px;gap:8px;flex-wrap:wrap;">
+            <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;">
+              <h3 style="margin:0;font-size:1rem;">Email — Unread Viewer, Important Summary &amp; Batch Drafts</h3>
+              <span id="emailLastFetchBadge" class="badge">Last fetched: Never</span>
+            </div>
+            <button type="button" class="sm hidden" id="btnToggleEmailCfg" onclick="$('emailCfgPanel').classList.toggle('hidden')">IMAP / SMTP Config</button>
+          </div>
+          <div class="row" style="margin-bottom:10px;">
+            <label style="width:130px;">Scan Last N
+              <input id="emScanLast" type="number" min="1" max="500" value="100" />
+            </label>
+            <label class="grow">Reply Style / Instructions (optional)
+              <input id="emInstructions" placeholder="e.g. concise, polite, sign off as Alex" />
+            </label>
+          </div>
+          <div class="row" style="margin-bottom:10px;">
+            <button type="button" id="btnShowUnreadEmail" onclick="loadUnreadEmails(true)">Fetch Unread Emails</button>
+            <button type="button" class="primary" id="btnSumEmail" onclick="summarizeEmails()">Summarize Important Unread (Last 100)</button>
+            <button type="button" class="primary" id="btnBatchDraft" onclick="batchDraftEmails()">Batch Prepare All Drafts</button>
+          </div>
+
+          <div id="emailCfgPanel" class="hidden" style="border-top:1px solid var(--border);padding-top:10px;margin-top:10px;">
+            <div class="row" style="margin-bottom:8px;">
+              <label class="grow">IMAP Host<input id="cfgImapHost" placeholder="imap.gmail.com" /></label>
+              <label style="width:90px;">Port<input id="cfgImapPort" type="number" value="993" /></label>
+              <label class="grow">SMTP Host<input id="cfgSmtpHost" placeholder="smtp.gmail.com" /></label>
+              <label style="width:90px;">Port<input id="cfgSmtpPort" type="number" value="587" /></label>
+            </div>
+            <div class="row">
+              <label class="grow">Email Address<input id="cfgEmailUser" placeholder="you@gmail.com" /></label>
+              <label class="grow">App Password<input id="cfgEmailPass" type="password" placeholder="leave blank to keep saved" /></label>
+              <button type="button" class="sm primary" onclick="saveEmailConfig()">Save Email Config</button>
+            </div>
+          </div>
+
+          <div id="emailDigestWrap" class="hidden" style="margin-top:12px;">
+            <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px;">
+              <strong style="font-size:.86rem;">Important Unread Briefing</strong>
+              <span id="emailDigestMeta" class="badge info"></span>
+            </div>
+            <div id="emailDigestBox" class="md-preview" style="min-height:180px;max-height:380px;"></div>
+          </div>
+        </div>
+
+        <!-- All Unread Emails Viewer -->
+        <div id="unreadEmailsCard" class="card hidden" style="margin-bottom:16px;">
+          <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px;flex-wrap:wrap;gap:8px;">
+            <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;">
+              <h3 style="margin:0;font-size:1rem;">Saved Unread Emails</h3>
+              <span id="unreadEmailsCount" class="badge info">0</span>
+              <span id="unreadEmailsFetchedAt" class="badge"></span>
+              <label style="flex-direction:row;align-items:center;gap:6px;color:var(--muted);font-size:.8rem;cursor:pointer;">
+                <input type="checkbox" id="hideAutoEmails" onchange="renderUnreadEmails()" /> Hide automated / promos
+              </label>
+            </div>
+            <div style="display:flex;gap:6px;">
+              <button class="sm" onclick="loadUnreadEmails(true)">Refetch Now</button>
+              <button class="sm" onclick="$('unreadEmailsCard').classList.add('hidden')">Hide</button>
+            </div>
+          </div>
+          <div id="unreadEmailsList" style="display:flex;flex-direction:column;gap:8px;max-height:460px;overflow-y:auto;"></div>
+        </div>
+
+        <!-- Email Reply Drafts Queue -->
+        <div class="card">
+          <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;flex-wrap:wrap;gap:8px;">
+            <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;">
+              <h3 style="margin:0;font-size:1rem;">Email Reply Drafts</h3>
+              <select id="emailDraftFilterStatus" onchange="loadChannelDrafts('email')" style="padding:5px 8px;font-size:.8rem;">
+                <option value="pending" selected>Pending</option>
+                <option value="">All Statuses</option>
+                <option value="sent">Sent</option>
+                <option value="dismissed">Dismissed</option>
+              </select>
+            </div>
+            <div style="display:flex;gap:8px;">
+              <button class="sm primary" onclick="sendAllPendingForChannel('email')">Send All Pending Emails</button>
+              <button class="sm" onclick="loadChannelDrafts('email')">Refresh</button>
+            </div>
+          </div>
+          <div id="emailDraftsContainer" style="display:flex;flex-direction:column;gap:12px;"></div>
+        </div>
+      </div>
+
+      <!-- ===== INBOX SUB-TAB: WHATSAPP ===== -->
+      <div id="inbox-sub-whatsapp" class="hidden">
+        <div class="card" style="margin-bottom:16px;">
+          <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px;gap:8px;flex-wrap:wrap;">
+            <h3 style="margin:0;font-size:1rem;">Personal WhatsApp (QR Pairing &amp; Unread Messages)</h3>
+            <span id="waStoreBadge" class="badge">sync: …</span>
+          </div>
+          <p id="waStatusNote" style="margin:0 0 10px;color:var(--muted);font-size:.84rem;">
+            Link your personal WhatsApp via the WAHA Docker sidecar (<code>docker compose --profile whatsapp up -d</code>). Incoming messages automatically create editable drafts below.
+          </p>
+          <div class="row" style="margin-bottom:10px;">
+            <button type="button" class="primary sm hidden" id="waStartBtn" onclick="startWhatsApp()">Start &amp; Show QR</button>
+            <button type="button" class="sm" onclick="refreshWhatsApp(true)">Refresh Status / QR</button>
+            <button type="button" class="primary sm" id="btnShowUnreadWa" onclick="loadUnreadWhatsApp()">Show All Unread Messages</button>
+            <button type="button" class="sm warn hidden" id="waEnableSyncBtn" onclick="enableWhatsAppSync()">Enable Full Unread Sync</button>
+            <button type="button" class="sm danger hidden" id="waStopBtn" onclick="stopWhatsApp()">Disconnect</button>
+          </div>
+          <div id="waQrBox" class="hidden" style="text-align:center;padding:12px;background:#fff;border-radius:10px;max-width:260px;margin:8px 0;">
+            <img id="waQrImg" alt="WhatsApp QR Code" style="width:100%;height:auto;display:block;" />
+            <div style="color:#111;font-size:.76rem;margin-top:6px;font-weight:600;">Scan in WhatsApp → Linked Devices</div>
+          </div>
+        </div>
+
+        <!-- All Unread WhatsApp Messages Viewer -->
+        <div id="unreadWaCard" class="card hidden" style="margin-bottom:16px;">
+          <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px;flex-wrap:wrap;gap:8px;">
+            <div style="display:flex;align-items:center;gap:8px;">
+              <h3 style="margin:0;font-size:1rem;">All Unread WhatsApp Messages</h3>
+              <span id="unreadWaCount" class="badge ok">0</span>
+            </div>
+            <div style="display:flex;gap:8px;">
+              <button class="sm" onclick="loadUnreadWhatsApp()">Refresh</button>
+              <button class="sm" onclick="$('unreadWaCard').classList.add('hidden')">Hide</button>
+            </div>
+          </div>
+          <div id="unreadWaHint" class="alert warn hidden"></div>
+          <div id="unreadWaList" style="display:flex;flex-direction:column;gap:8px;max-height:460px;overflow-y:auto;"></div>
+        </div>
+
+        <!-- WhatsApp Reply Drafts Queue -->
+        <div class="card">
+          <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;flex-wrap:wrap;gap:8px;">
+            <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;">
+              <h3 style="margin:0;font-size:1rem;">WhatsApp Reply Drafts</h3>
+              <select id="waDraftFilterStatus" onchange="loadChannelDrafts('whatsapp')" style="padding:5px 8px;font-size:.8rem;">
+                <option value="pending" selected>Pending</option>
+                <option value="">All Statuses</option>
+                <option value="sent">Sent</option>
+                <option value="dismissed">Dismissed</option>
+              </select>
+            </div>
+            <div style="display:flex;gap:8px;">
+              <button class="sm primary" onclick="sendAllPendingForChannel('whatsapp')">Send All Pending WhatsApp</button>
+              <button class="sm" onclick="loadChannelDrafts('whatsapp')">Refresh</button>
+            </div>
+          </div>
+          <div id="waDraftsContainer" style="display:flex;flex-direction:column;gap:12px;"></div>
+        </div>
+      </div>
+    </section>
+
     <!-- TAB: AGENTS -->
     <section id="tab-agents" class="panel">
       <div class="card" style="margin-bottom:16px;" id="createAgentCard">
@@ -377,6 +544,35 @@
         </div>
       </div>
       <div id="agentsGrid" class="grid-2"></div>
+    </section>
+
+    <!-- TAB: TOOL FORGE (DYNAMIC TOOL CREATOR) -->
+    <section id="tab-tools" class="panel">
+      <div class="card" style="margin-bottom:16px;">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px;flex-wrap:wrap;gap:8px;">
+          <div>
+            <h3 style="margin:0;font-size:1rem;">Dynamic Tool Creator (Tool Forge)</h3>
+            <div style="color:var(--muted);font-size:.83rem;">Builds, AST-verifies, unit-tests, and permanently saves new reusable Python tools whenever existing tools aren't enough.</div>
+          </div>
+          <span id="creatorModelBadge" class="badge info" style="font-family:var(--mono);">model: deepseek-chat</span>
+        </div>
+        <div class="row" style="margin-bottom:10px;">
+          <label style="width:220px;">Tool Name (snake_case)
+            <input id="tcName" placeholder="e.g. csv_stats" />
+          </label>
+          <label class="grow">Short Description
+            <input id="tcDesc" placeholder="Compute summary statistics (mean, median, min, max) for a CSV column" />
+          </label>
+        </div>
+        <label style="margin-bottom:10px;">Detailed Requirements (inputs, behavior, edge cases, output)
+          <textarea id="tcReqs" rows="3" placeholder="Accepts path (workspace relative CSV path) and column (column name). Reads file with ws_read(path), parses CSV, computes count, mean, median, min, max, and returns a Markdown summary table."></textarea>
+        </label>
+        <div class="row" style="justify-content:flex-end;">
+          <button type="button" class="primary" id="tcBuildBtn" onclick="buildCustomTool()">Build, Test &amp; Save Tool</button>
+        </div>
+      </div>
+
+      <div id="toolsGrid" class="grid-2"></div>
     </section>
 
     <!-- TAB: WORKSPACE -->
@@ -404,6 +600,192 @@
           <div id="wsPanes" class="ws-panes">
             <textarea id="wsEditor" rows="20" class="hidden" style="width:100%;font-family:var(--mono);min-height:420px;" oninput="renderWsPreview()" placeholder="File contents appear here…"></textarea>
             <div id="wsPreview" class="md-preview" style="color:var(--muted);">Select a file from <code>workspace/</code> to preview it.</div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- TAB: TASK SCHEDULER -->
+    <section id="tab-scheduler" class="panel">
+      <div class="card" style="margin-bottom:16px;">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;flex-wrap:wrap;gap:8px;">
+          <h3 style="margin:0;font-size:1rem;">Create Scheduled Task</h3>
+          <span id="schTzLabel" class="badge info">Local time</span>
+        </div>
+        <div class="row" style="margin-bottom:10px;">
+          <label class="grow">Schedule Name
+            <input id="schName" placeholder="e.g. Morning HN Digest" />
+          </label>
+          <label style="width:160px;">Run Target
+            <select id="schTargetType" onchange="onSchTargetChange()">
+              <option value="orchestrator">Orchestrator</option>
+              <option value="worker">Specific Worker</option>
+            </select>
+          </label>
+          <label id="schWorkerWrap" class="hidden" style="width:200px;">Worker Agent
+            <select id="schWorkerSelect"></select>
+          </label>
+          <label style="width:190px;">Trigger Type
+            <select id="schTriggerType" onchange="onSchTriggerChange()">
+              <option value="interval">Repeating Interval</option>
+              <option value="daily">Specific Time of Day</option>
+            </select>
+          </label>
+        </div>
+
+        <div class="row" style="margin-bottom:10px;">
+          <label id="schIntervalWrap" style="min-width:240px;">Frequency
+            <select id="schInterval">
+              <optgroup label="Short intervals (5 min – 1 hour)">
+                <option value="5">Every 5 minutes</option>
+                <option value="10">Every 10 minutes</option>
+                <option value="15" selected>Every 15 minutes</option>
+                <option value="20">Every 20 minutes</option>
+                <option value="30">Every 30 minutes</option>
+                <option value="45">Every 45 minutes</option>
+                <option value="60">Every 1 hour</option>
+              </optgroup>
+              <optgroup label="Multi-hour (4-hour increments)">
+                <option value="240">Every 4 hours</option>
+                <option value="480">Every 8 hours</option>
+                <option value="720">Every 12 hours</option>
+                <option value="960">Every 16 hours</option>
+                <option value="1200">Every 20 hours</option>
+                <option value="1440">Every 24 hours</option>
+              </optgroup>
+            </select>
+          </label>
+
+          <label id="schDailyTimeWrap" class="hidden" style="width:170px;">Time of Day (Local)
+            <input id="schDailyTime" type="time" value="09:00" />
+          </label>
+
+          <label id="schDaysWrap" class="hidden grow">Days of Week
+            <div style="display:flex;flex-wrap:wrap;gap:10px;padding:7px 0;color:var(--text);font-size:.83rem;">
+              <label style="flex-direction:row;color:var(--text);"><input type="checkbox" class="sch-day-cb" value="0" checked /> Sun</label>
+              <label style="flex-direction:row;color:var(--text);"><input type="checkbox" class="sch-day-cb" value="1" checked /> Mon</label>
+              <label style="flex-direction:row;color:var(--text);"><input type="checkbox" class="sch-day-cb" value="2" checked /> Tue</label>
+              <label style="flex-direction:row;color:var(--text);"><input type="checkbox" class="sch-day-cb" value="3" checked /> Wed</label>
+              <label style="flex-direction:row;color:var(--text);"><input type="checkbox" class="sch-day-cb" value="4" checked /> Thu</label>
+              <label style="flex-direction:row;color:var(--text);"><input type="checkbox" class="sch-day-cb" value="5" checked /> Fri</label>
+              <label style="flex-direction:row;color:var(--text);"><input type="checkbox" class="sch-day-cb" value="6" checked /> Sat</label>
+            </div>
+          </label>
+        </div>
+
+        <label style="margin-bottom:10px;">Task / Prompt
+          <textarea id="schPrompt" rows="3" placeholder="e.g. Fetch top AI headlines and write a clean summary to notes/daily_ai.md"></textarea>
+        </label>
+        <div class="row" style="justify-content:space-between;align-items:center;">
+          <div style="display:flex;flex-wrap:wrap;gap:14px;font-size:.84rem;">
+            <label style="flex-direction:row;align-items:center;color:var(--text);cursor:pointer;">
+              <input type="checkbox" id="schNotifyTg" /> Send result to my Telegram Bot
+            </label>
+            <label style="flex-direction:row;align-items:center;color:var(--text);cursor:pointer;">
+              <input type="checkbox" id="schNotifyWa" /> Send result to my WhatsApp
+            </label>
+          </div>
+          <button type="button" class="primary" id="schCreateBtn" onclick="createSchedule()">Create Schedule</button>
+        </div>
+      </div>
+
+      <div class="ws-layout">
+        <div class="card">
+          <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px;">
+            <strong>Scheduled Jobs</strong>
+            <button class="sm" onclick="loadSchedules()">Refresh</button>
+          </div>
+          <div id="schedulesList" class="file-list" style="max-height:600px;gap:8px;"></div>
+        </div>
+
+        <div class="card">
+          <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px;flex-wrap:wrap;gap:8px;">
+            <strong id="schDetailTitle">Run History &amp; Output Preview</strong>
+            <span id="schDetailMeta" class="badge">select a schedule</span>
+          </div>
+          <div id="schRunsList" style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:10px;"></div>
+          <div id="schOutputPreview" class="md-preview" style="color:var(--muted);">
+            Select a scheduled job on the left to inspect its run history and rendered Markdown outputs.
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- TAB: MY BOTS (PER-USER TELEGRAM BOT + WHATSAPP SCHEDULE NOTIFICATIONS) -->
+    <section id="tab-mybots" class="panel">
+      <div class="grid-2" style="margin-bottom:16px;">
+        <!-- Per-User Telegram Bot -->
+        <div class="card">
+          <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px;gap:8px;flex-wrap:wrap;">
+            <h3 style="margin:0;font-size:1rem;">My Personal Telegram Bot (Full Control)</h3>
+            <span id="myTgStatusBadge" class="badge">stopped</span>
+          </div>
+          <p style="margin:0 0 12px;color:var(--muted);font-size:.84rem;">
+            Create a free bot with <code>@BotFather</code>, paste your token below, and control all of <strong>agent-hive</strong> (chat, .md/.txt/.csv files, agents, Tool Forge, schedules, emails &amp; drafts) directly from Telegram.
+          </p>
+          <div id="myTgErr" class="alert err hidden"></div>
+          <div class="form-col">
+            <label>Bot Token (from @BotFather)
+              <input id="myTgToken" type="password" placeholder="123456789:ABCdef... (leave blank to keep saved)" />
+              <span id="myTgTokenHint" style="font-size:.75rem;color:var(--muted);font-family:var(--mono);"></span>
+            </label>
+            <label>Authorized Telegram Chat ID (optional — or use link command below)
+              <input id="myTgChatId" placeholder="Auto-filled when you send /link CODE to your bot" style="font-family:var(--mono);" />
+            </label>
+            <label style="flex-direction:row;align-items:center;gap:8px;color:var(--text);cursor:pointer;">
+              <input type="checkbox" id="myTgEnabled" /> Enable My Telegram Bot (long-polling, no domain needed)
+            </label>
+            <div class="row">
+              <button type="button" class="primary" onclick="saveMyChannels()">Save &amp; Apply</button>
+              <button type="button" class="sm" onclick="testMyTelegram()">Send Test Message</button>
+              <button type="button" class="sm" onclick="loadMyBots()">Refresh Status</button>
+            </div>
+          </div>
+
+          <div style="margin-top:14px;padding:12px;border-radius:9px;background:var(--bg);border:1px solid var(--border);">
+            <div style="font-size:.8rem;color:var(--muted);margin-bottom:6px;">
+              <strong>Easy Pairing:</strong> Open your bot in Telegram and send this one-time link command:
+            </div>
+            <div class="row" style="align-items:center;">
+              <code id="myTgLinkCmd" style="font-size:.9rem;color:var(--green);">/link …</code>
+              <button type="button" class="sm" onclick="copyText($('myTgLinkCmd').textContent, 'Link command copied')">Copy</button>
+            </div>
+          </div>
+        </div>
+
+        <!-- Per-User WhatsApp Schedule Notifications -->
+        <div class="card">
+          <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px;gap:8px;flex-wrap:wrap;">
+            <h3 style="margin:0;font-size:1rem;">My WhatsApp Schedule Alerts</h3>
+            <span class="badge info">Scheduled Tasks Only</span>
+          </div>
+          <p style="margin:0 0 12px;color:var(--muted);font-size:.84rem;">
+            Receive completed <strong>Scheduled Task</strong> outputs directly on your WhatsApp. Leave phone number blank to send to the linked WhatsApp account itself ("Message Yourself").
+          </p>
+          <div class="form-col">
+            <label>WhatsApp Phone Number or Chat ID (with country code, e.g. 8801712345678)
+              <input id="myWaTarget" placeholder="Leave blank for linked self-chat" style="font-family:var(--mono);" />
+            </label>
+            <label style="flex-direction:row;align-items:center;gap:8px;color:var(--text);cursor:pointer;">
+              <input type="checkbox" id="myWaEnabled" /> Enable WhatsApp delivery for my scheduled tasks
+            </label>
+            <div class="row">
+              <button type="button" class="primary" onclick="saveMyChannels()">Save WhatsApp Settings</button>
+              <button type="button" class="sm" onclick="testMyWhatsApp()">Send Test WhatsApp</button>
+            </div>
+          </div>
+
+          <div style="margin-top:16px;padding:12px;border-radius:9px;background:var(--bg);border:1px solid var(--border);font-size:.8rem;color:var(--muted);">
+            <strong style="color:var(--text);">Telegram Bot Command Cheatsheet:</strong>
+            <div style="margin-top:6px;font-family:var(--mono);line-height:1.65;">
+              Plain text / .md,.txt,.csv file → Orchestrator Chat<br>
+              /status · /agents · /run &lt;agent&gt; &lt;task&gt;<br>
+              /tools · /create_tool name | desc | reqs<br>
+              /schedules · /schedule 09:00 | Name | Prompt<br>
+              /run_schedule &lt;id&gt; · /pause_schedule &lt;id&gt;<br>
+              /emails · /draft_emails · /drafts · /send_draft &lt;id&gt;<br>
+              /files · /read &lt;path&gt; · /tasks · /reset
+            </div>
           </div>
         </div>
       </div>
@@ -778,6 +1160,9 @@ function enterForUser(user) {
   const isAdmin = user.role === 'admin';
   $('adminTabBtn').classList.toggle('hidden', !isAdmin);
   $('wsDeleteBtn').classList.toggle('hidden', !isAdmin);
+  $('btnToggleEmailCfg').classList.toggle('hidden', !isAdmin);
+  $('waStartBtn').classList.toggle('hidden', !isAdmin);
+  $('waStopBtn').classList.toggle('hidden', !isAdmin);
   const restricted = user.status === 'restricted';
   $('restrictedBanner').classList.toggle('hidden', !restricted);
   if (restricted) {
@@ -878,8 +1263,12 @@ function showTab(name, btn) {
   document.querySelectorAll('.tab').forEach(b => b.classList.remove('active'));
   $('tab-' + name).classList.add('active');
   if (btn) btn.classList.add('active');
+  if (name === 'inbox') loadInboxPage();
   if (name === 'agents') loadToolsAndAgents();
+  if (name === 'tools') loadToolForge();
   if (name === 'workspace') loadWorkspace();
+  if (name === 'scheduler') loadSchedules();
+  if (name === 'mybots') loadMyBots();
   if (name === 'tasks') loadTasks();
   if (name === 'admin') loadAdminAll();
 }
@@ -1206,6 +1595,785 @@ async function deleteWorkspaceFile() {
   renderWsPreview();
   toast('File deleted');
   loadWorkspace();
+}
+
+// ---------- INBOX (SEPARATED EMAIL & WHATSAPP + ALL UNREAD VIEWERS) ----------
+let inboxSub = 'email';
+let draftsByChannel = { email: [], whatsapp: [] };
+let unreadEmailsCache = [];
+let unreadWaCache = [];
+
+function showInboxSub(sub) {
+  inboxSub = sub;
+  $('inboxSubBtnEmail').classList.toggle('active', sub === 'email');
+  $('inboxSubBtnWhatsapp').classList.toggle('active', sub === 'whatsapp');
+  $('inbox-sub-email').classList.toggle('hidden', sub !== 'email');
+  $('inbox-sub-whatsapp').classList.toggle('hidden', sub !== 'whatsapp');
+  if (sub === 'email') loadChannelDrafts('email');
+  if (sub === 'whatsapp') { refreshWhatsApp(false); loadChannelDrafts('whatsapp'); }
+}
+
+async function loadInboxPage() {
+  await Promise.all([
+    loadUnreadEmails(false),
+    loadChannelDrafts('email'),
+    loadChannelDrafts('whatsapp'),
+    refreshWhatsApp(false),
+    loadEmailConfigIfAdmin(),
+  ]);
+}
+
+async function loadEmailConfigIfAdmin() {
+  if (!meUser || meUser.role !== 'admin') return;
+  const r = await fetch('/api/v1/inbox/email/config');
+  if (!r.ok) return;
+  const c = await r.json();
+  $('cfgImapHost').value = c.imap_host || '';
+  $('cfgImapPort').value = c.imap_port || 993;
+  $('cfgSmtpHost').value = c.smtp_host || '';
+  $('cfgSmtpPort').value = c.smtp_port || 587;
+  $('cfgEmailUser').value = c.user || '';
+  $('cfgEmailPass').value = '';
+}
+
+async function saveEmailConfig() {
+  const r = await fetch('/api/v1/inbox/email/config', {
+    method: 'PUT', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      imap_host: $('cfgImapHost').value.trim(),
+      imap_port: Number($('cfgImapPort').value) || 993,
+      smtp_host: $('cfgSmtpHost').value.trim(),
+      smtp_port: Number($('cfgSmtpPort').value) || 587,
+      user: $('cfgEmailUser').value.trim(),
+      password: $('cfgEmailPass').value || null,
+    }),
+  });
+  const d = await r.json().catch(() => ({}));
+  if (!r.ok) return toast(d.detail || 'Save failed');
+  $('cfgEmailPass').value = '';
+  toast('Email IMAP/SMTP settings saved');
+  loadChannelDrafts('email');
+}
+
+function updateEmailFetchTime(ts) {
+  const txt = ts ? `Last fetched: ${formatTs(ts)}` : 'Last fetched: Never';
+  $('emailLastFetchBadge').textContent = txt;
+  $('emailLastFetchBadge').className = 'badge ' + (ts ? 'ok' : '');
+  if ($('unreadEmailsFetchedAt')) $('unreadEmailsFetchedAt').textContent = txt;
+}
+
+async function loadUnreadEmails(refresh = true) {
+  const btn = $('btnShowUnreadEmail');
+  if (refresh) { btn.disabled = true; btn.textContent = 'Fetching Unread…'; }
+  try {
+    const scanLast = Number($('emScanLast').value) || 100;
+    const r = await fetch(`/api/v1/inbox/email/unread?scan_last=${scanLast}&refresh=${refresh ? 'true' : 'false'}`);
+    const d = await r.json().catch(() => ({}));
+    if (!r.ok) {
+      if (refresh) toast(d.detail || 'Failed to fetch unread emails');
+      return;
+    }
+    updateEmailFetchTime(d.fetched_at);
+    unreadEmailsCache = d.emails || [];
+    if (d.fetched_at || unreadEmailsCache.length) {
+      $('unreadEmailsCard').classList.remove('hidden');
+      renderUnreadEmails();
+    }
+    if (!refresh && d.last_summary && d.last_summary.summary_markdown) {
+      $('emailDigestWrap').classList.remove('hidden');
+      $('emailDigestMeta').textContent = `${d.last_summary.unread_count} unread in last ${d.last_summary.scanned_last} • ${formatTs(d.last_summary.fetched_at)}`;
+      $('emailDigestBox').innerHTML = renderMarkdown(d.last_summary.summary_markdown);
+    }
+    if (refresh) toast(`Fetched & saved ${unreadEmailsCache.length} unread email(s) from last ${d.scanned_last}`);
+  } finally {
+    if (refresh) { btn.disabled = false; btn.textContent = 'Fetch Unread Emails'; }
+  }
+}
+
+function renderUnreadEmails() {
+  const hideAuto = $('hideAutoEmails').checked;
+  const list = hideAuto ? unreadEmailsCache.filter(m => !m.is_automated) : unreadEmailsCache;
+  $('unreadEmailsCount').textContent = `${list.length} shown / ${unreadEmailsCache.length} unread`;
+  const box = $('unreadEmailsList');
+  if (!list.length) {
+    box.innerHTML = '<div style="color:var(--muted);font-size:.85rem;">No unread emails matching filter.</div>';
+    return;
+  }
+  box.innerHTML = list.map((m, idx) => {
+    const realIdx = unreadEmailsCache.indexOf(m);
+    return `
+      <div class="card" style="background:var(--surface-2);padding:12px;">
+        <div style="display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:4px;">
+          <div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap;">
+            <strong>${esc(m.subject)}</strong>
+            ${m.is_automated ? '<span class="badge warn">automated/promo</span>' : '<span class="badge ok">direct</span>'}
+          </div>
+          <span style="color:var(--muted);font-size:.75rem;">${esc(m.date)}</span>
+        </div>
+        <div style="font-size:.8rem;color:var(--muted);margin-bottom:6px;font-family:var(--mono);">${esc(m.from)}</div>
+        <details style="margin-bottom:8px;">
+          <summary style="cursor:pointer;color:var(--accent);font-size:.8rem;">Read message (${m.body.length} chars)</summary>
+          <pre style="white-space:pre-wrap;max-height:240px;">${esc(m.body)}</pre>
+        </details>
+        <div class="row" style="justify-content:flex-end;">
+          <button class="sm primary" onclick="draftSingleEmail(${realIdx})">Prepare Draft Reply</button>
+        </div>
+      </div>
+    `;
+  }).join('');
+}
+
+async function draftSingleEmail(idx) {
+  const m = unreadEmailsCache[idx];
+  if (!m) return;
+  toast(`Drafting reply to ${m.sender_name}…`);
+  const r = await fetch('/api/v1/inbox/email/draft-one', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      uid: m.uid,
+      message_id: m.message_id || '',
+      sender_name: m.sender_name,
+      sender_email: m.sender_email,
+      subject: m.subject,
+      body: m.body,
+      instructions: $('emInstructions').value.trim(),
+    }),
+  });
+  const d = await r.json().catch(() => ({}));
+  if (!r.ok) return toast(d.detail || 'Draft failed');
+  if (d.user_quota && meUser) { meUser.tokens_used = d.user_quota.tokens_used; renderUserHeader(); }
+  toast('Editable draft added below');
+  loadChannelDrafts('email');
+}
+
+async function summarizeEmails() {
+  const btn = $('btnSumEmail');
+  btn.disabled = true; btn.textContent = 'Scanning & Summarizing…';
+  try {
+    const r = await fetch('/api/v1/inbox/email/summarize', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ scan_last: Number($('emScanLast').value) || 100 }),
+    });
+    const d = await r.json().catch(() => ({}));
+    if (!r.ok) return toast(d.detail || 'Email summary failed');
+    $('emailDigestWrap').classList.remove('hidden');
+    $('emailDigestMeta').textContent = `${d.unread_count} unread in last ${d.scanned_last} • ${formatTs(d.fetched_at)}`;
+    $('emailDigestBox').innerHTML = renderMarkdown(d.summary_markdown || '');
+    if (d.fetched_at) updateEmailFetchTime(d.fetched_at);
+    loadUnreadEmails(false);
+    if (d.user_quota && meUser) { meUser.tokens_used = d.user_quota.tokens_used; renderUserHeader(); }
+    toast('Important unread email summary ready');
+  } finally {
+    btn.disabled = false; btn.textContent = 'Summarize Important Unread (Last 100)';
+  }
+}
+
+async function batchDraftEmails() {
+  const btn = $('btnBatchDraft');
+  btn.disabled = true; btn.textContent = 'Drafting Multiple Replies…';
+  try {
+    const r = await fetch('/api/v1/inbox/email/batch-draft', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        scan_last: Number($('emScanLast').value) || 100,
+        instructions: $('emInstructions').value.trim(),
+      }),
+    });
+    const d = await r.json().catch(() => ({}));
+    if (!r.ok) return toast(d.detail || 'Batch drafting failed');
+    if (d.fetched_at) updateEmailFetchTime(d.fetched_at);
+    if (d.user_quota && meUser) { meUser.tokens_used = d.user_quota.tokens_used; renderUserHeader(); }
+    toast(d.message || `Prepared ${(d.drafts || []).length} drafts`);
+    loadUnreadEmails(false);
+    loadChannelDrafts('email');
+  } finally {
+    btn.disabled = false; btn.textContent = 'Batch Prepare All Drafts';
+  }
+}
+
+async function refreshWhatsApp(showQrIfPending) {
+  const r = await fetch('/api/v1/inbox/whatsapp/status');
+  if (!r.ok) return;
+  const d = await r.json();
+  const st = d.status || 'OFFLINE';
+  const cls = st === 'WORKING' ? 'ok' : st === 'SCAN_QR_CODE' ? 'warn' : 'err';
+  $('waStatusBadge').textContent = 'whatsapp: ' + st;
+  $('waStatusBadge').className = 'badge ' + cls;
+  $('waStoreBadge').textContent = d.store_enabled ? 'unread sync: ON' : 'unread sync: webhook-only';
+  $('waStoreBadge').className = 'badge ' + (d.store_enabled ? 'ok' : 'warn');
+  const isAdmin = meUser && meUser.role === 'admin';
+  $('waEnableSyncBtn').classList.toggle('hidden', !(isAdmin && st === 'WORKING' && !d.store_enabled));
+
+  if (st === 'WORKING' && d.me) {
+    $('waStatusNote').textContent = `Connected as ${d.me.pushName || d.me.id || 'personal WhatsApp'}. Click "Show All Unread Messages" or review incoming drafts below.`;
+    $('waQrBox').classList.add('hidden');
+  } else if (st === 'SCAN_QR_CODE') {
+    $('waStatusNote').textContent = 'Ready to link — scan the QR code below using WhatsApp on your phone.';
+    if (isAdmin) {
+      $('waQrImg').src = `/api/v1/inbox/whatsapp/qr?t=${Date.now()}`;
+      $('waQrBox').classList.remove('hidden');
+    }
+  } else {
+    $('waQrBox').classList.add('hidden');
+    if (d.error) $('waStatusNote').textContent = d.error;
+    else if (showQrIfPending) toast(`WhatsApp session status: ${st}`);
+  }
+}
+
+async function enableWhatsAppSync() {
+  toast('Enabling NOWEB unread chat sync & restarting WAHA session…');
+  const r = await fetch('/api/v1/inbox/whatsapp/enable-sync', { method: 'POST' });
+  const d = await r.json().catch(() => ({}));
+  if (!r.ok) return toast(d.detail || 'Could not enable unread sync');
+  setTimeout(async () => {
+    await refreshWhatsApp(false);
+    await loadUnreadWhatsApp();
+  }, 3500);
+}
+
+async function loadUnreadWhatsApp() {
+  const btn = $('btnShowUnreadWa');
+  btn.disabled = true; btn.textContent = 'Loading Unread…';
+  try {
+    const r = await fetch('/api/v1/inbox/whatsapp/unread');
+    const d = await r.json().catch(() => ({}));
+    if (!r.ok) return toast(d.detail || 'Failed to load unread WhatsApp messages');
+    unreadWaCache = d.messages || [];
+    $('unreadWaCard').classList.remove('hidden');
+    $('unreadWaCount').textContent = `${unreadWaCache.length} unread`;
+    $('unreadWaHint').classList.toggle('hidden', !d.hint);
+    if (d.hint) $('unreadWaHint').textContent = d.hint + (d.store_enabled ? '' : ' Click "Enable Full Unread Sync" above to sync existing unread WhatsApp chats.');
+
+    const box = $('unreadWaList');
+    if (!unreadWaCache.length) {
+      box.innerHTML = '<div style="color:var(--muted);font-size:.85rem;">No unread WhatsApp messages found.</div>';
+      return;
+    }
+    box.innerHTML = unreadWaCache.map((m, idx) => `
+      <div class="card" style="background:var(--surface-2);padding:12px;">
+        <div style="display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:6px;">
+          <div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap;">
+            <strong>${esc(m.sender_name)}</strong>
+            <span class="badge ok">${m.unread_count || 1} unread</span>
+            <span class="badge">${esc(m.source)}</span>
+            <span style="color:var(--muted);font-family:var(--mono);font-size:.76rem;">${esc(m.chat_id)}</span>
+          </div>
+          <span style="color:var(--muted);font-size:.75rem;">${esc(formatTs(m.timestamp))}</span>
+        </div>
+        <pre style="white-space:pre-wrap;max-height:180px;margin-bottom:8px;">${esc(m.body)}</pre>
+        <div class="row" style="justify-content:flex-end;">
+          <button class="sm primary" onclick="draftSingleWhatsApp(${idx})">Prepare Draft Reply</button>
+          ${m.source === 'webhook' ? `<button class="sm" onclick="markWaUnreadRead('${esc(m.id)}')">Mark Read</button>` : ''}
+        </div>
+      </div>
+    `).join('');
+  } finally {
+    btn.disabled = false; btn.textContent = 'Show All Unread Messages';
+  }
+}
+
+async function draftSingleWhatsApp(idx) {
+  const m = unreadWaCache[idx];
+  if (!m) return;
+  toast(`Drafting WhatsApp reply to ${m.sender_name}…`);
+  const r = await fetch('/api/v1/inbox/whatsapp/manual-draft', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      sender_name: m.sender_name,
+      chat_id: m.chat_id,
+      incoming_text: m.body,
+    }),
+  });
+  const d = await r.json().catch(() => ({}));
+  if (!r.ok) return toast(d.detail || 'Draft failed');
+  if (d.user_quota && meUser) { meUser.tokens_used = d.user_quota.tokens_used; renderUserHeader(); }
+  toast('Editable WhatsApp draft added below');
+  loadChannelDrafts('whatsapp');
+}
+
+async function markWaUnreadRead(id) {
+  await fetch(`/api/v1/inbox/whatsapp/unread/${encodeURIComponent(id)}/read`, { method: 'POST' });
+  loadUnreadWhatsApp();
+}
+
+async function startWhatsApp() {
+  toast('Starting personal WhatsApp session (booting QR)…');
+  const r = await fetch('/api/v1/inbox/whatsapp/start', { method: 'POST' });
+  const d = await r.json().catch(() => ({}));
+  if (!r.ok) return toast(d.detail || 'Could not start WAHA session');
+  for (let i = 0; i < 10; i++) {
+    await new Promise(res => setTimeout(res, 2000));
+    await refreshWhatsApp(true);
+    const st = $('waStatusBadge').textContent;
+    if (st.includes('SCAN_QR_CODE') || st.includes('WORKING') || st.includes('FAILED')) break;
+  }
+}
+
+async function stopWhatsApp() {
+  const r = await fetch('/api/v1/inbox/whatsapp/stop', { method: 'POST' });
+  if (r.ok) { toast('WhatsApp session stopped'); refreshWhatsApp(false); }
+}
+
+async function loadChannelDrafts(channel) {
+  const selId = channel === 'email' ? 'emailDraftFilterStatus' : 'waDraftFilterStatus';
+  const boxId = channel === 'email' ? 'emailDraftsContainer' : 'waDraftsContainer';
+  const st = $(selId).value;
+  const qs = new URLSearchParams({ channel });
+  if (st) qs.set('status', st);
+  const r = await fetch('/api/v1/inbox/drafts?' + qs.toString());
+  if (!r.ok) return;
+  const d = await r.json();
+  $('emailCfgBadge').textContent = d.email_configured ? 'email: ready' : 'email: not configured';
+  $('emailCfgBadge').className = 'badge ' + (d.email_configured ? 'ok' : 'warn');
+  const list = d.drafts || [];
+  draftsByChannel[channel] = list;
+  const box = $(boxId);
+  if (!list.length) {
+    box.innerHTML = `<div style="color:var(--muted);font-size:.86rem;">No ${channel} drafts match this filter.</div>`;
+    return;
+  }
+  box.innerHTML = list.map(drf => {
+    const chCls = drf.channel === 'whatsapp' ? 'ok' : 'info';
+    const prCls = drf.priority === 'high' ? 'err' : drf.priority === 'medium' ? 'warn' : '';
+    const stCls = drf.status === 'sent' ? 'ok' : drf.status === 'dismissed' ? 'err' : 'warn';
+    return `
+      <div class="card" style="background:var(--surface-2);">
+        <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px;margin-bottom:6px;">
+          <div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap;">
+            <span class="badge ${chCls}">${esc(drf.channel.toUpperCase())}</span>
+            <span class="badge ${prCls}">${esc(drf.priority)}</span>
+            <span class="badge ${stCls}">${esc(drf.status)}</span>
+            <strong>${esc(drf.sender_name)}</strong>
+            <span style="color:var(--muted);font-family:var(--mono);font-size:.78rem;">&lt;${esc(drf.sender_addr)}&gt;</span>
+          </div>
+          <span style="color:var(--muted);font-size:.76rem;">${esc(formatTs(drf.created_at))}</span>
+        </div>
+        ${drf.summary ? `<div style="font-size:.84rem;color:#cbd5e1;margin-bottom:6px;"><strong>Summary:</strong> ${esc(drf.summary)}</div>` : ''}
+        <details style="margin-bottom:8px;">
+          <summary style="cursor:pointer;color:var(--muted);font-size:.8rem;">Original message (${esc(drf.subject || 'no subject')})</summary>
+          <pre style="white-space:pre-wrap;max-height:200px;">${esc(drf.incoming_body)}</pre>
+        </details>
+        ${drf.channel === 'email' ? `
+          <label style="margin-bottom:6px;">Reply Subject
+            <input id="drf_subj_${drf.id}" value="${esc(drf.draft_subject)}" />
+          </label>
+        ` : ''}
+        <label style="margin-bottom:8px;">Editable Reply
+          <textarea id="drf_body_${drf.id}" rows="4" style="width:100%;">${esc(drf.draft_reply)}</textarea>
+        </label>
+        ${drf.error ? `<div class="alert err" style="margin-bottom:8px;">Send error: ${esc(drf.error)}</div>` : ''}
+        <div class="row" style="justify-content:flex-end;">
+          <button class="sm" onclick="saveDraftEdit('${drf.id}', '${drf.channel}')">Save Edit</button>
+          ${drf.status !== 'sent' ? `<button class="sm primary" onclick="saveAndSendDraft('${drf.id}', '${drf.channel}')">Send Reply</button>` : ''}
+          ${drf.status === 'pending' ? `<button class="sm warn" onclick="dismissDraft('${drf.id}', '${drf.channel}')">Dismiss</button>` : ''}
+          <button class="sm danger" onclick="deleteDraft('${drf.id}', '${drf.channel}')">Delete</button>
+        </div>
+      </div>
+    `;
+  }).join('');
+}
+
+async function saveDraftEdit(id, channel) {
+  const payload = { draft_reply: $(`drf_body_${id}`).value };
+  if (channel === 'email' && $(`drf_subj_${id}`)) payload.draft_subject = $(`drf_subj_${id}`).value;
+  const r = await fetch(`/api/v1/inbox/drafts/${id}`, {
+    method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload),
+  });
+  if (!r.ok) return toast('Failed to save draft');
+  toast('Draft saved');
+  return true;
+}
+
+async function saveAndSendDraft(id, channel) {
+  const ok = await saveDraftEdit(id, channel);
+  if (!ok) return;
+  toast('Sending reply…');
+  const r = await fetch(`/api/v1/inbox/drafts/${id}/send`, { method: 'POST' });
+  const d = await r.json().catch(() => ({}));
+  if (!r.ok) { toast(d.detail || 'Send failed'); loadChannelDrafts(channel); return; }
+  toast('Reply sent!');
+  loadChannelDrafts(channel);
+}
+
+async function sendAllPendingForChannel(channel) {
+  const pending = (draftsByChannel[channel] || []).filter(d => d.status === 'pending');
+  if (!pending.length) return toast(`No pending ${channel} drafts to send`);
+  if (!confirm(`Send all ${pending.length} pending ${channel} reply draft(s)?`)) return;
+  for (const drf of pending) {
+    if ($(`drf_body_${drf.id}`)) await saveDraftEdit(drf.id, drf.channel);
+  }
+  const r = await fetch('/api/v1/inbox/drafts/send-batch', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ draft_ids: pending.map(d => d.id) }),
+  });
+  const d = await r.json().catch(() => ({}));
+  const sentCnt = (d.results || []).filter(x => x.sent).length;
+  toast(`Sent ${sentCnt} / ${pending.length} ${channel} draft(s)`);
+  loadChannelDrafts(channel);
+}
+
+async function dismissDraft(id, channel) {
+  const r = await fetch(`/api/v1/inbox/drafts/${id}`, {
+    method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ status: 'dismissed' }),
+  });
+  if (r.ok) { toast('Draft dismissed'); loadChannelDrafts(channel); }
+}
+
+async function deleteDraft(id, channel) {
+  const r = await fetch(`/api/v1/inbox/drafts/${id}`, { method: 'DELETE' });
+  if (r.ok) { toast('Draft deleted'); loadChannelDrafts(channel); }
+}
+
+// ---------- TOOL FORGE (DYNAMIC TOOL CREATOR) ----------
+async function loadToolForge() {
+  const r = await fetch('/api/v1/tools');
+  if (!r.ok) return;
+  const d = await r.json();
+  if (d.creator_model) $('creatorModelBadge').textContent = `creator: ${d.creator_model}`;
+  const tools = d.tools || [];
+  const isAdmin = meUser && meUser.role === 'admin';
+  $('toolsGrid').innerHTML = tools.map(t => `
+    <div class="card">
+      <div style="display:flex;justify-content:space-between;align-items:center;gap:8px;margin-bottom:6px;">
+        <strong style="font-family:var(--mono);">${esc(t.name)}</strong>
+        <div style="display:flex;gap:5px;">
+          <span class="badge ${t.is_custom ? 'ok' : 'info'}">${t.is_custom ? 'custom' : 'built-in'}</span>
+          ${t.is_custom ? `<span class="badge">${t.use_count || 0} uses</span>` : ''}
+        </div>
+      </div>
+      <p style="margin:0 0 8px;color:var(--muted);font-size:.85rem;">${esc(t.description)}</p>
+      <div style="font-size:.75rem;color:var(--muted);margin-bottom:8px;font-family:var(--mono);">
+        Origin: ${esc(t.created_by_model || 'built-in')}
+      </div>
+      <details style="margin-bottom:8px;">
+        <summary style="cursor:pointer;font-size:.8rem;color:var(--muted);">JSON Parameters Schema</summary>
+        <pre>${esc(JSON.stringify(t.parameters, null, 2))}</pre>
+      </details>
+      ${t.code ? `
+        <details style="margin-bottom:8px;">
+          <summary style="cursor:pointer;font-size:.8rem;color:var(--muted);">Generated Python Source &amp; Tests</summary>
+          <pre>${esc(t.code)}</pre>
+          ${t.tests ? `<pre>${esc(t.tests)}</pre>` : ''}
+        </details>
+      ` : ''}
+      <div class="row">
+        <button class="sm" onclick="testToolPrompt('${esc(t.name)}')">Test Tool</button>
+        ${t.is_custom && isAdmin ? `<button class="sm danger" onclick="deleteCustomTool('${esc(t.name)}')">Delete</button>` : ''}
+      </div>
+    </div>
+  `).join('');
+}
+
+async function buildCustomTool() {
+  const name = $('tcName').value.trim();
+  const description = $('tcDesc').value.trim();
+  const requirements = $('tcReqs').value.trim();
+  if (!name || !description || !requirements) return toast('Fill in tool name, description, and requirements');
+  const btn = $('tcBuildBtn');
+  btn.disabled = true; btn.textContent = 'Synthesizing & Testing with deepseek-chat…';
+  try {
+    const r = await fetch('/api/v1/tools/create', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name, description, requirements }),
+    });
+    const d = await r.json().catch(() => ({}));
+    if (!r.ok) return toast(d.detail || 'Tool creation failed');
+    if (d.user_quota && meUser) { meUser.tokens_used = d.user_quota.tokens_used; renderUserHeader(); }
+    toast(`Created & saved reusable tool '${d.tool.name}'!`);
+    $('tcName').value = ''; $('tcDesc').value = ''; $('tcReqs').value = '';
+    loadToolForge();
+    loadToolsAndAgents();
+  } finally {
+    btn.disabled = false; btn.textContent = 'Build, Test & Save Tool';
+  }
+}
+
+async function testToolPrompt(name) {
+  const raw = prompt(`JSON arguments for tool '${name}':`, '{}');
+  if (raw === null) return;
+  let args;
+  try { args = JSON.parse(raw); } catch { return toast('Invalid JSON'); }
+  const r = await fetch(`/api/v1/tools/${encodeURIComponent(name)}/test`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ arguments: args }),
+  });
+  const d = await r.json().catch(() => ({}));
+  if (!r.ok) return toast(d.detail || 'Tool test failed');
+  alert(`Tool '${name}' output:\n\n${d.output}`);
+}
+
+async function deleteCustomTool(name) {
+  if (!confirm(`Delete custom tool '${name}'?`)) return;
+  const r = await fetch(`/api/v1/tools/${encodeURIComponent(name)}`, { method: 'DELETE' });
+  if (r.ok) { toast('Custom tool deleted'); loadToolForge(); loadToolsAndAgents(); }
+}
+
+// ---------- TASK SCHEDULER ----------
+let activeScheduleId = null;
+let currentScheduleRuns = [];
+const DAY_NAMES = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+
+function localTzOffsetMinutes() {
+  return -new Date().getTimezoneOffset();
+}
+
+function formatTzLabel(offMin) {
+  const sign = offMin >= 0 ? '+' : '-';
+  const abs = Math.abs(offMin);
+  const hh = String(Math.floor(abs / 60)).padStart(2, '0');
+  const mm = String(abs % 60).padStart(2, '0');
+  return `Local time (UTC${sign}${hh}:${mm})`;
+}
+
+function formatTriggerLabel(s) {
+  if (s.trigger_type === 'interval') {
+    const m = s.interval_minutes;
+    return m >= 60 ? `Every ${m / 60} hour${m === 60 ? '' : 's'}` : `Every ${m} min`;
+  }
+  const days = (s.days_of_week || []).length === 7
+    ? 'Every day'
+    : (s.days_of_week || []).map(d => DAY_NAMES[d] || d).join(', ');
+  return `${days} at ${s.daily_time}`;
+}
+
+function formatTs(ts) {
+  if (!ts) return '—';
+  return new Date(ts * 1000).toLocaleString();
+}
+
+function onSchTargetChange() {
+  $('schWorkerWrap').classList.toggle('hidden', $('schTargetType').value !== 'worker');
+}
+
+function onSchTriggerChange() {
+  const isDaily = $('schTriggerType').value === 'daily';
+  $('schIntervalWrap').classList.toggle('hidden', isDaily);
+  $('schDailyTimeWrap').classList.toggle('hidden', !isDaily);
+  $('schDaysWrap').classList.toggle('hidden', !isDaily);
+}
+
+async function loadSchedules() {
+  $('schTzLabel').textContent = formatTzLabel(localTzOffsetMinutes());
+  const [sr, ar] = await Promise.all([fetch('/api/v1/schedules'), fetch('/api/v1/agents')]);
+  if (ar.ok) {
+    const agents = (await ar.json()).agents || [];
+    $('schWorkerSelect').innerHTML = agents.length
+      ? agents.map(a => `<option value="${esc(a.name)}">${esc(a.name)} (${esc(a.model)})</option>`).join('')
+      : '<option value="">(no workers yet)</option>';
+  }
+  if (!sr.ok) return;
+  const schedules = (await sr.json()).schedules || [];
+  const box = $('schedulesList');
+  if (!schedules.length) {
+    box.innerHTML = '<div style="color:var(--muted);font-size:.84rem;">No scheduled tasks yet. Create one above.</div>';
+    return;
+  }
+  box.innerHTML = schedules.map(s => {
+    const stCls = s.last_status === 'done' ? 'ok' : s.last_status === 'failed' ? 'err' : s.last_status === 'skipped' ? 'warn' : '';
+    const targetBadge = s.target_type === 'worker' ? `worker:${s.agent_name}` : 'orchestrator';
+    const isSel = activeScheduleId === s.id;
+    return `
+      <div class="file-item ${isSel ? 'active' : ''}" style="padding:10px;cursor:pointer;" onclick="selectSchedule('${s.id}', '${esc(s.name)}')">
+        <div style="display:flex;justify-content:space-between;align-items:center;gap:6px;margin-bottom:4px;">
+          <strong style="font-family:var(--sans);font-size:.9rem;">${esc(s.name)}</strong>
+          <span class="badge ${s.enabled ? 'ok' : 'warn'}">${s.enabled ? 'active' : 'paused'}</span>
+        </div>
+        <div style="display:flex;gap:5px;flex-wrap:wrap;margin-bottom:5px;">
+          <span class="badge info">${esc(formatTriggerLabel(s))}</span>
+          <span class="badge">${esc(targetBadge)}</span>
+          <span class="badge ${stCls}">${esc(s.last_status)} (${s.run_count})</span>
+          ${s.notify_telegram ? '<span class="badge ok">TG</span>' : ''}
+          ${s.notify_whatsapp ? '<span class="badge ok">WA</span>' : ''}
+        </div>
+        <div style="font-size:.74rem;color:var(--muted);margin-bottom:7px;">
+          Next: ${s.enabled ? esc(formatTs(s.next_run_at)) : 'Paused'}<br>
+          Last: ${esc(formatTs(s.last_run_at))}
+        </div>
+        <div style="display:flex;gap:5px;flex-wrap:wrap;" onclick="event.stopPropagation()">
+          <button class="sm primary" onclick="runScheduleNow('${s.id}')">Run Now</button>
+          <button class="sm" onclick="toggleSchedule('${s.id}', ${!s.enabled})">${s.enabled ? 'Pause' : 'Resume'}</button>
+          <button class="sm danger" onclick="deleteSchedule('${s.id}')">Delete</button>
+        </div>
+      </div>
+    `;
+  }).join('');
+  if (activeScheduleId && schedules.some(s => s.id === activeScheduleId)) {
+    loadScheduleRuns(activeScheduleId);
+  }
+}
+
+async function createSchedule() {
+  const name = $('schName').value.trim();
+  const prompt = $('schPrompt').value.trim();
+  if (!name || !prompt) return toast('Enter a schedule name and task prompt');
+  const target_type = $('schTargetType').value;
+  const agent_name = target_type === 'worker' ? $('schWorkerSelect').value : '';
+  if (target_type === 'worker' && !agent_name) return toast('Create or select a worker agent first');
+
+  const trigger_type = $('schTriggerType').value;
+  const payload = {
+    name,
+    target_type,
+    agent_name,
+    prompt,
+    trigger_type,
+    timezone_offset_minutes: localTzOffsetMinutes(),
+    enabled: true,
+    notify_telegram: $('schNotifyTg').checked,
+    notify_whatsapp: $('schNotifyWa').checked,
+  };
+  if (trigger_type === 'interval') {
+    payload.interval_minutes = Number($('schInterval').value);
+  } else {
+    payload.daily_time = $('schDailyTime').value;
+    const days = [...document.querySelectorAll('.sch-day-cb:checked')].map(c => Number(c.value));
+    if (!days.length) return toast('Select at least one day of the week');
+    payload.days_of_week = days;
+  }
+
+  const r = await fetch('/api/v1/schedules', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  });
+  const d = await r.json().catch(() => ({}));
+  if (!r.ok) return toast(d.detail || 'Failed to create schedule');
+  toast(`Created schedule '${d.schedule.name}'`);
+  $('schName').value = '';
+  $('schPrompt').value = '';
+  activeScheduleId = d.schedule.id;
+  loadSchedules();
+}
+
+async function toggleSchedule(id, enabled) {
+  const r = await fetch(`/api/v1/schedules/${id}`, {
+    method: 'PATCH', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ enabled }),
+  });
+  if (!r.ok) return toast('Update failed');
+  toast(enabled ? 'Schedule resumed' : 'Schedule paused');
+  loadSchedules();
+}
+
+async function deleteSchedule(id) {
+  if (!confirm('Delete this scheduled task and its run history?')) return;
+  const r = await fetch(`/api/v1/schedules/${id}`, { method: 'DELETE' });
+  if (!r.ok) return toast('Delete failed');
+  if (activeScheduleId === id) {
+    activeScheduleId = null;
+    $('schRunsList').innerHTML = '';
+    $('schOutputPreview').innerHTML = '<span style="color:var(--muted);">Schedule deleted.</span>';
+  }
+  toast('Schedule deleted');
+  loadSchedules();
+}
+
+async function runScheduleNow(id) {
+  toast('Running scheduled task…');
+  const r = await fetch(`/api/v1/schedules/${id}/run`, { method: 'POST' });
+  const d = await r.json().catch(() => ({}));
+  if (!r.ok) return toast(d.detail || 'Run failed');
+  if (d.user_quota && meUser) {
+    meUser.tokens_used = d.user_quota.tokens_used;
+    renderUserHeader();
+  }
+  toast(`Run finished (${d.run.status})`);
+  activeScheduleId = id;
+  await loadSchedules();
+  renderScheduleRunOutput(d.run);
+}
+
+function selectSchedule(id, name) {
+  activeScheduleId = id;
+  $('schDetailTitle').textContent = `Runs — ${name}`;
+  loadSchedules();
+  loadScheduleRuns(id);
+}
+
+async function loadScheduleRuns(id) {
+  const r = await fetch(`/api/v1/schedules/${id}/runs?limit=25`);
+  if (!r.ok) return;
+  const runs = (await r.json()).runs || [];
+  currentScheduleRuns = runs;
+  $('schDetailMeta').textContent = `${runs.length} run${runs.length === 1 ? '' : 's'}`;
+  if (!runs.length) {
+    $('schRunsList').innerHTML = '';
+    $('schOutputPreview').innerHTML = '<span style="color:var(--muted);">No runs yet. Click <strong>Run Now</strong> or wait for the next scheduled trigger.</span>';
+    return;
+  }
+  $('schRunsList').innerHTML = runs.map((run, idx) => {
+    const cls = run.status === 'done' ? 'ok' : run.status === 'failed' ? 'err' : 'warn';
+    return `<button class="sm" onclick="renderScheduleRunOutput(currentScheduleRuns[${idx}])">#${run.id} <span class="badge ${cls}">${esc(run.status)}</span> ${esc(new Date(run.started_at * 1000).toLocaleTimeString())}</button>`;
+  }).join('');
+  renderScheduleRunOutput(runs[0]);
+}
+
+function renderScheduleRunOutput(run) {
+  const el = $('schOutputPreview');
+  el.style.color = 'var(--text)';
+  const meta = `<div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:10px;padding-bottom:8px;border-bottom:1px solid var(--border);font-size:.8rem;color:var(--muted);">` +
+    `<span class="badge ${run.status === 'done' ? 'ok' : run.status === 'failed' ? 'err' : 'warn'}">${esc(run.status)}</span>` +
+    `<span>Started: ${esc(formatTs(run.started_at))}</span>` +
+    `<span>Tokens: ${(run.tokens_used || 0).toLocaleString()}</span></div>`;
+  const trace = (run.logs && run.logs.length)
+    ? `<details style="margin-top:14px;"><summary style="cursor:pointer;color:var(--muted);font-size:.82rem;">Execution Trace (${run.logs.length} events)</summary><pre>${esc(run.logs.join('\n'))}</pre></details>`
+    : '';
+  el.innerHTML = meta + renderMarkdown(run.result || '(empty output)') + trace;
+}
+
+// ---------- MY BOTS (PER-USER TELEGRAM BOT & WHATSAPP ALERTS) ----------
+async function loadMyBots() {
+  const r = await fetch('/api/v1/me/channels');
+  if (!r.ok) return;
+  const d = await r.json();
+  const c = d.channels || {};
+  const w = d.telegram_worker || {};
+  $('myTgToken').value = '';
+  $('myTgTokenHint').textContent = c.has_telegram_token ? `Saved token: ${c.telegram_token_hint}` : 'No bot token saved yet';
+  $('myTgChatId').value = c.telegram_chat_id || '';
+  $('myTgEnabled').checked = !!c.telegram_enabled;
+  $('myTgLinkCmd').textContent = `/link ${c.telegram_link_code || ''}`;
+  $('myWaTarget').value = c.whatsapp_target || '';
+  $('myWaEnabled').checked = !!c.whatsapp_enabled;
+
+  const badge = $('myTgStatusBadge');
+  const label = w.bot_username ? `@${w.bot_username} (${w.state})` : (w.state || 'stopped');
+  badge.textContent = label;
+  badge.className = 'badge ' + (w.running && w.state === 'polling' ? 'ok' : w.state === 'error' ? 'err' : 'warn');
+  $('myTgErr').classList.toggle('hidden', !w.last_error);
+  if (w.last_error) $('myTgErr').textContent = w.last_error;
+}
+
+async function saveMyChannels() {
+  const payload = {
+    telegram_bot_token: $('myTgToken').value.trim() || null,
+    telegram_chat_id: $('myTgChatId').value.trim(),
+    telegram_enabled: $('myTgEnabled').checked,
+    whatsapp_target: $('myWaTarget').value.trim(),
+    whatsapp_enabled: $('myWaEnabled').checked,
+  };
+  const r = await fetch('/api/v1/me/channels', {
+    method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload),
+  });
+  const d = await r.json().catch(() => ({}));
+  if (!r.ok) return toast(d.detail || 'Save failed');
+  toast('Personal bot & alert settings saved');
+  setTimeout(loadMyBots, 1000);
+}
+
+async function testMyTelegram() {
+  toast('Sending test Telegram message…');
+  const r = await fetch('/api/v1/me/channels/test-telegram', { method: 'POST' });
+  const d = await r.json().catch(() => ({}));
+  if (!r.ok) return toast(d.detail || 'Telegram test failed');
+  toast('Test Telegram message sent!');
+}
+
+async function testMyWhatsApp() {
+  toast('Sending test WhatsApp alert…');
+  const r = await fetch('/api/v1/me/channels/test-whatsapp', { method: 'POST' });
+  const d = await r.json().catch(() => ({}));
+  if (!r.ok) return toast(d.detail || 'WhatsApp test failed');
+  toast(`Test WhatsApp sent to ${d.target}!`);
 }
 
 // ---------- TASKS ----------

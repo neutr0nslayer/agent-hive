@@ -1,9 +1,11 @@
 """FastAPI REST server, Auth/RBAC, file uploads (.md/.txt/.csv), quotas, Admin & Studio GUI."""
 import hmac
+import json
 import os
 import re
 import threading
 import time
+from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Literal, Optional
 
@@ -12,11 +14,32 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse, JSONResponse
 from pydantic import BaseModel, Field
 
+from .channels.email_client import (
+    EmailConfigError,
+    fetch_unread_from_last,
+    get_email_config,
+    is_email_configured,
+    send_email_reply,
+)
+from .channels.telegram_bot import TelegramBotManager, TelegramError, tg_send_message
+from .channels.whatsapp_client import (
+    WhatsAppError,
+    enable_store_and_restart as wa_enable_store,
+    fetch_qr_image,
+    fetch_unread_chats as wa_fetch_unread,
+    get_session_status as wa_get_status,
+    get_whatsapp_config,
+    send_whatsapp_message,
+    start_session as wa_start_session,
+    stop_session as wa_stop_session,
+)
 from .llm import LLMError, finish_usage_tracking, start_usage_tracking
 from .orchestrator import NAME_RE
 from .registry import AgentSpec, SESSION_TTL_SECONDS, VALID_SCOPES
+from .scheduler import ALLOWED_INTERVAL_MINUTES, TaskScheduler, compute_next_run, validate_trigger
 
 DASHBOARD_PATH = Path(__file__).resolve().parent / "dashboard.html"
+FAVICON_PATH = Path(__file__).resolve().parent / "favicon.svg"
 SESSION_COOKIE = "hive_session"
 ALLOWED_UPLOAD_EXTS = {".md", ".markdown", ".txt", ".csv"}
 MAX_UPLOAD_BYTES = 2 * 1024 * 1024  # 2 MiB per file
@@ -124,6 +147,105 @@ class ApiKeyCreateRequest(BaseModel):
     name: str = Field(..., min_length=1, max_length=80)
     scopes: list[Literal["read", "write", "admin"]] = Field(default=["read", "write"])
     expires_in_days: Optional[float] = Field(None, gt=0)
+
+
+class ScheduleCreateRequest(BaseModel):
+    name: str = Field(..., min_length=1, max_length=80, description="Short schedule name")
+    target_type: Literal["orchestrator", "worker"] = "orchestrator"
+    agent_name: str = Field("", description="Required when target_type='worker'")
+    prompt: str = Field(..., min_length=1, description="Task prompt to execute on schedule")
+    trigger_type: Literal["interval", "daily"] = "interval"
+    interval_minutes: Optional[int] = Field(
+        None, description="Allowed: 5, 10, 15, 20, 30, 45, 60, 240, 480, 720, 960, 1200, 1440"
+    )
+    daily_time: Optional[str] = Field(None, description="24-hour HH:MM time of day (e.g. '09:00')")
+    days_of_week: Optional[list[int]] = Field(None, description="0=Sun..6=Sat (defaults to all days)")
+    timezone_offset_minutes: int = Field(0, description="User UTC offset in minutes (e.g. +360 for UTC+6)")
+    enabled: bool = True
+    notify_telegram: bool = False
+    notify_whatsapp: bool = False
+
+
+class ScheduleUpdateRequest(BaseModel):
+    name: Optional[str] = Field(None, min_length=1, max_length=80)
+    target_type: Optional[Literal["orchestrator", "worker"]] = None
+    agent_name: Optional[str] = None
+    prompt: Optional[str] = Field(None, min_length=1)
+    trigger_type: Optional[Literal["interval", "daily"]] = None
+    interval_minutes: Optional[int] = None
+    daily_time: Optional[str] = None
+    days_of_week: Optional[list[int]] = None
+    timezone_offset_minutes: Optional[int] = None
+    enabled: Optional[bool] = None
+    notify_telegram: Optional[bool] = None
+    notify_whatsapp: Optional[bool] = None
+
+
+class UserChannelsUpdateRequest(BaseModel):
+    telegram_bot_token: Optional[str] = None
+    clear_telegram_token: bool = False
+    telegram_chat_id: Optional[str] = None
+    telegram_enabled: Optional[bool] = None
+    regenerate_link_code: bool = False
+    whatsapp_target: Optional[str] = None
+    whatsapp_enabled: Optional[bool] = None
+
+
+class ToolCreateRequest(BaseModel):
+    name: str = Field(..., min_length=2, max_length=40, description="lowercase_snake_case tool name")
+    description: str = Field(..., min_length=3, max_length=240)
+    requirements: str = Field(..., min_length=5, description="Detailed behavior, inputs, and output spec")
+
+
+class ToolTestRequest(BaseModel):
+    arguments: dict = Field(default_factory=dict)
+
+
+class EmailConfigUpdateRequest(BaseModel):
+    imap_host: str = ""
+    imap_port: int = 993
+    smtp_host: str = ""
+    smtp_port: int = 587
+    user: str = ""
+    password: Optional[str] = None
+    folder: str = "INBOX"
+
+
+class EmailSummarizeRequest(BaseModel):
+    scan_last: int = Field(100, ge=1, le=500)
+
+
+class EmailBatchDraftRequest(BaseModel):
+    scan_last: int = Field(100, ge=1, le=500)
+    instructions: str = Field("", max_length=500)
+    max_drafts: int = Field(15, ge=1, le=40)
+
+
+class DraftUpdateRequest(BaseModel):
+    draft_subject: Optional[str] = None
+    draft_reply: Optional[str] = None
+    status: Optional[Literal["pending", "dismissed"]] = None
+
+
+class BatchSendDraftsRequest(BaseModel):
+    draft_ids: list[str] = Field(..., min_length=1)
+
+
+class WhatsAppManualDraftRequest(BaseModel):
+    sender_name: str = Field(..., min_length=1)
+    chat_id: str = Field(..., min_length=3, description="Phone number or WA chatId (e.g. 15551234567@c.us)")
+    incoming_text: str = Field(..., min_length=1)
+    instructions: str = ""
+
+
+class EmailSingleDraftRequest(BaseModel):
+    uid: str = ""
+    message_id: str = ""
+    sender_name: str = ""
+    sender_email: str = Field(..., min_length=3)
+    subject: str = "(no subject)"
+    body: str = ""
+    instructions: str = ""
 
 
 # --- Helpers -----------------------------------------------------------------
@@ -259,17 +381,31 @@ def create_app(orch, api_token: Optional[str] = None) -> FastAPI:
         orig_log(msg)
 
     orch.log = _capture_log
+    scheduler = TaskScheduler(orch, op_lock, tls)
+    tg_manager = TelegramBotManager(orch, scheduler, op_lock, tls)
+
+    @asynccontextmanager
+    async def lifespan(_app: FastAPI):
+        scheduler.start()
+        tg_manager.start_all()
+        try:
+            yield
+        finally:
+            tg_manager.stop_all()
+            scheduler.stop()
 
     app = FastAPI(
         title="agent-hive Studio & API",
         version="2.0.0",
         description=(
             "Multi-model AI agent orchestrator with Studio GUI, user auth & admin controls, "
-            "token usage quotas, chat file uploads (.md/.txt/.csv), and API key distribution."
+            "token usage quotas, chat file uploads (.md/.txt/.csv), persistent task scheduler, "
+            "and API key distribution."
         ),
         docs_url="/docs",
         redoc_url="/redoc",
         openapi_url="/openapi.json",
+        lifespan=lifespan,
     )
 
     cors_origins = [
@@ -501,6 +637,17 @@ def create_app(orch, api_token: Optional[str] = None) -> FastAPI:
             return HTMLResponse(DASHBOARD_PATH.read_text(encoding="utf-8"))
         return HTMLResponse("<h1>agent-hive</h1><p>Visit <a href='/docs'>/docs</a>.</p>")
 
+    @app.get("/favicon.svg", include_in_schema=False)
+    @app.get("/favicon.ico", include_in_schema=False)
+    def favicon():
+        if FAVICON_PATH.is_file():
+            return Response(
+                content=FAVICON_PATH.read_bytes(),
+                media_type="image/svg+xml",
+                headers={"Cache-Control": "public, max-age=86400"},
+            )
+        return Response(status_code=204)
+
     @app.get("/health", tags=["System"], summary="Health check and runtime summary")
     def health():
         oc = orch.cfg["orchestrator"]
@@ -520,6 +667,7 @@ def create_app(orch, api_token: Optional[str] = None) -> FastAPI:
                 "tools": len(orch.lib.tools),
                 "api_keys": len(orch.reg.list_api_keys()),
                 "users": len(orch.reg.list_users()),
+                "schedules": len(orch.reg.list_schedules()),
             },
             "models": {
                 "orchestrator": f"{om} @ {oep}",
@@ -880,14 +1028,58 @@ def create_app(orch, api_token: Optional[str] = None) -> FastAPI:
                 orch.reg.save_agent(a)
             return _model_summary()
 
-    @app.get("/api/v1/tools", tags=["Models & Tools"], summary="List available worker tools and JSON schemas")
+    @app.get("/api/v1/tools", tags=["Models & Tools"], summary="List built-in and dynamically created custom tools")
     def list_tools(_caller=Depends(require_scope("read"))):
         return {
-            "tools": [
-                {"name": name, "description": desc, "parameters": schema}
-                for name, (desc, schema, _) in orch.lib.tools.items()
-            ]
+            "tools": orch.lib.list_tool_details(),
+            "creator_model": orch.tool_creator.resolve_creator_model()[0],
         }
+
+    @app.post(
+        "/api/v1/tools/create",
+        status_code=201,
+        tags=["Models & Tools"],
+        summary="Synthesize, test, and persist a new reusable tool using deepseek-chat",
+    )
+    def create_custom_tool(req: ToolCreateRequest, caller=Depends(require_scope("write"))):
+        _check_user_quota(caller)
+        tls.logs = []
+        start_usage_tracking()
+        try:
+            with op_lock:
+                saved = orch.tool_creator.create_tool(
+                    req.name, req.description, req.requirements, created_by=caller["name"]
+                )
+        except ValueError as e:
+            finish_usage_tracking()
+            raise HTTPException(status_code=400, detail=str(e))
+        except (RuntimeError, LLMError) as e:
+            usage = finish_usage_tracking()
+            if usage["total_tokens"] > 0:
+                _record_caller_usage(caller, usage)
+            return JSONResponse(status_code=502, content={"detail": str(e), "logs": tls.logs})
+        finally:
+            logs = list(tls.logs or [])
+            tls.logs = None
+        usage = finish_usage_tracking()
+        quota = _record_caller_usage(caller, usage)
+        return {"tool": saved, "logs": logs, "usage": usage, "user_quota": quota}
+
+    @app.post("/api/v1/tools/{name}/test", tags=["Models & Tools"], summary="Invoke a registered tool directly with JSON args")
+    def test_tool(name: str, req: ToolTestRequest, _caller=Depends(require_scope("write"))):
+        if name not in orch.lib.tools:
+            raise HTTPException(status_code=404, detail=f"no tool named '{name}'")
+        from .runner import _execute
+        out = _execute({"name": name, "arguments": json.dumps(req.arguments)}, orch.lib.tools)
+        return {"tool": name, "output": out}
+
+    @app.delete("/api/v1/tools/{name}", tags=["Models & Tools"], summary="Delete a dynamically created custom tool")
+    def delete_custom_tool(name: str, _caller=Depends(require_scope("admin"))):
+        if name in orch.lib.builtin_names():
+            raise HTTPException(status_code=400, detail=f"built-in tool '{name}' cannot be deleted")
+        if not orch.lib.unregister_custom_tool(name):
+            raise HTTPException(status_code=404, detail=f"no custom tool named '{name}'")
+        return {"deleted": True, "name": name}
 
     # --- Workspace Files -----------------------------------------------------
 
@@ -982,6 +1174,7 @@ def create_app(orch, api_token: Optional[str] = None) -> FastAPI:
             raise HTTPException(status_code=400, detail=str(e))
         if not updated:
             raise HTTPException(status_code=404, detail=f"no user '{user_id}'")
+        tg_manager.sync_user(user_id)
         return {"user": updated}
 
     @app.delete("/api/v1/admin/users/{user_id}", tags=["Admin"], summary="Permanently delete a user account")
@@ -991,6 +1184,7 @@ def create_app(orch, api_token: Optional[str] = None) -> FastAPI:
             raise HTTPException(status_code=400, detail="Admins cannot delete their own account.")
         if not orch.reg.delete_user(user_id):
             raise HTTPException(status_code=404, detail=f"no user '{user_id}'")
+        tg_manager.sync_user(user_id)
         return {"deleted": True, "id": user_id}
 
     @app.get("/api/v1/admin/settings", tags=["Admin"], summary="Get persisted global platform settings")
@@ -1062,6 +1256,663 @@ def create_app(orch, api_token: Optional[str] = None) -> FastAPI:
             if not orch.reg.get_api_key(key_id):
                 raise HTTPException(status_code=404, detail=f"no API key '{key_id}'")
         return {"revoked": True, "id": key_id}
+
+    # --- Task Scheduler (Persistent) -----------------------------------------
+
+    def _can_manage_schedule(caller: dict, sch: dict) -> bool:
+        if "admin" in caller["scopes"]:
+            return True
+        u = caller.get("user")
+        return bool(u and sch.get("user_id") == u["id"])
+
+    @app.get("/api/v1/schedules", tags=["Scheduler"], summary="List scheduled tasks")
+    def list_schedules(caller=Depends(require_scope("read"))):
+        if "admin" in caller["scopes"]:
+            items = orch.reg.list_schedules()
+        else:
+            u = caller.get("user")
+            items = orch.reg.list_schedules(user_id=u["id"]) if u else []
+        return {
+            "schedules": items,
+            "allowed_intervals_minutes": list(ALLOWED_INTERVAL_MINUTES),
+        }
+
+    @app.post("/api/v1/schedules", status_code=201, tags=["Scheduler"], summary="Create a recurring scheduled task")
+    def create_schedule(req: ScheduleCreateRequest, caller=Depends(require_scope("write"))):
+        _check_user_quota(caller)
+        target_type = req.target_type
+        agent_name = req.agent_name.strip()
+        if target_type == "worker":
+            if not agent_name or not orch.reg.get_agent(agent_name):
+                raise HTTPException(
+                    status_code=400, detail=f"unknown worker agent '{agent_name}'"
+                )
+        else:
+            agent_name = ""
+        try:
+            trig, iv, dt_str, days, tz_off = validate_trigger(
+                req.trigger_type,
+                req.interval_minutes,
+                req.daily_time,
+                req.days_of_week,
+                req.timezone_offset_minutes,
+            )
+        except ValueError as e:
+            raise HTTPException(status_code=400, detail=str(e))
+
+        next_ts = (
+            compute_next_run(trig, iv, dt_str, days, tz_off) if req.enabled else None
+        )
+        u = caller.get("user")
+        sch = orch.reg.create_schedule(
+            user_id=u["id"] if u else None,
+            owner_name=caller["name"],
+            name=req.name.strip(),
+            target_type=target_type,
+            agent_name=agent_name,
+            prompt=req.prompt.strip(),
+            trigger_type=trig,
+            interval_minutes=iv,
+            daily_time=dt_str,
+            days_of_week=days,
+            timezone_offset_minutes=tz_off,
+            enabled=req.enabled,
+            next_run_at=next_ts,
+            notify_telegram=req.notify_telegram,
+            notify_whatsapp=req.notify_whatsapp,
+        )
+        return {"schedule": sch}
+
+    @app.patch("/api/v1/schedules/{schedule_id}", tags=["Scheduler"], summary="Pause, resume, or update a schedule")
+    def update_schedule(
+        schedule_id: str, req: ScheduleUpdateRequest, caller=Depends(require_scope("write"))
+    ):
+        sch = orch.reg.get_schedule(schedule_id)
+        if not sch:
+            raise HTTPException(status_code=404, detail=f"no schedule '{schedule_id}'")
+        if not _can_manage_schedule(caller, sch):
+            raise HTTPException(status_code=403, detail="You can only modify your own schedules.")
+
+        new_target = req.target_type if req.target_type is not None else sch["target_type"]
+        new_agent = req.agent_name.strip() if req.agent_name is not None else sch["agent_name"]
+        if new_target == "worker":
+            if not new_agent or not orch.reg.get_agent(new_agent):
+                raise HTTPException(status_code=400, detail=f"unknown worker agent '{new_agent}'")
+        else:
+            new_agent = ""
+
+        trig_in = req.trigger_type if req.trigger_type is not None else sch["trigger_type"]
+        iv_in = req.interval_minutes if req.interval_minutes is not None else sch["interval_minutes"]
+        dt_in = req.daily_time if req.daily_time is not None else sch["daily_time"]
+        days_in = req.days_of_week if req.days_of_week is not None else sch["days_of_week"]
+        tz_in = req.timezone_offset_minutes if req.timezone_offset_minutes is not None else sch["timezone_offset_minutes"]
+
+        try:
+            trig, iv, dt_str, days, tz_off = validate_trigger(trig_in, iv_in, dt_in, days_in, tz_in)
+        except ValueError as e:
+            raise HTTPException(status_code=400, detail=str(e))
+
+        new_enabled = sch["enabled"] if req.enabled is None else req.enabled
+        trigger_changed = any(
+            v is not None
+            for v in (req.trigger_type, req.interval_minutes, req.daily_time, req.days_of_week, req.timezone_offset_minutes)
+        )
+        if not new_enabled:
+            next_ts = None
+        elif trigger_changed or not sch["enabled"] or sch["next_run_at"] is None:
+            next_ts = compute_next_run(trig, iv, dt_str, days, tz_off)
+        else:
+            next_ts = sch["next_run_at"]
+
+        updated = orch.reg.update_schedule(schedule_id, {
+            "name": req.name.strip() if req.name is not None else sch["name"],
+            "target_type": new_target,
+            "agent_name": new_agent,
+            "prompt": req.prompt.strip() if req.prompt is not None else sch["prompt"],
+            "trigger_type": trig,
+            "interval_minutes": iv,
+            "daily_time": dt_str,
+            "days_of_week": days,
+            "timezone_offset_minutes": tz_off,
+            "enabled": new_enabled,
+            "next_run_at": next_ts,
+            "notify_telegram": sch["notify_telegram"] if req.notify_telegram is None else req.notify_telegram,
+            "notify_whatsapp": sch["notify_whatsapp"] if req.notify_whatsapp is None else req.notify_whatsapp,
+        })
+        return {"schedule": updated}
+
+    @app.delete("/api/v1/schedules/{schedule_id}", tags=["Scheduler"], summary="Delete a scheduled task")
+    def delete_schedule(schedule_id: str, caller=Depends(require_scope("write"))):
+        sch = orch.reg.get_schedule(schedule_id)
+        if not sch:
+            raise HTTPException(status_code=404, detail=f"no schedule '{schedule_id}'")
+        if not _can_manage_schedule(caller, sch):
+            raise HTTPException(status_code=403, detail="You can only delete your own schedules.")
+        orch.reg.delete_schedule(schedule_id)
+        return {"deleted": True, "id": schedule_id}
+
+    @app.post("/api/v1/schedules/{schedule_id}/run", tags=["Scheduler"], summary="Run a scheduled task immediately")
+    def run_schedule_now(schedule_id: str, caller=Depends(require_scope("write"))):
+        _check_user_quota(caller)
+        sch = orch.reg.get_schedule(schedule_id)
+        if not sch:
+            raise HTTPException(status_code=404, detail=f"no schedule '{schedule_id}'")
+        if not _can_manage_schedule(caller, sch):
+            raise HTTPException(status_code=403, detail="You can only run your own schedules.")
+        run = scheduler.execute_schedule(schedule_id, scheduled=False)
+        fresh_sch = orch.reg.get_schedule(schedule_id)
+        u = caller.get("user")
+        quota = None
+        if u:
+            fu = orch.reg.get_user(u["id"])
+            if fu:
+                quota = {"tokens_used": fu["tokens_used"], "token_limit": fu["token_limit"]}
+        return {"run": run, "schedule": fresh_sch, "user_quota": quota}
+
+    @app.get("/api/v1/schedules/{schedule_id}/runs", tags=["Scheduler"], summary="Get execution history of a schedule")
+    def list_schedule_runs(
+        schedule_id: str,
+        limit: int = Query(30, ge=1, le=200),
+        caller=Depends(require_scope("read")),
+    ):
+        sch = orch.reg.get_schedule(schedule_id)
+        if not sch:
+            raise HTTPException(status_code=404, detail=f"no schedule '{schedule_id}'")
+        if not _can_manage_schedule(caller, sch):
+            raise HTTPException(status_code=403, detail="You can only view your own schedule runs.")
+        return {"runs": orch.reg.list_schedule_runs(schedule_id, limit=limit)}
+
+    # --- Inbox: Email (Batch Drafts + Important Summary) & Personal WhatsApp (QR) ---
+
+    @app.get("/api/v1/inbox/drafts", tags=["Inbox"], summary="List editable Email & WhatsApp reply drafts")
+    def list_inbox_drafts(
+        channel: Optional[Literal["email", "whatsapp"]] = Query(None),
+        status: Optional[Literal["pending", "sent", "dismissed"]] = Query(None),
+        limit: int = Query(100, ge=1, le=300),
+        _caller=Depends(require_scope("read")),
+    ):
+        return {
+            "drafts": orch.reg.list_inbox_drafts(channel=channel, status=status, limit=limit),
+            "email_configured": is_email_configured(orch.reg),
+        }
+
+    @app.patch("/api/v1/inbox/drafts/{draft_id}", tags=["Inbox"], summary="Edit a reply draft or dismiss/restore it")
+    def update_inbox_draft(draft_id: str, req: DraftUpdateRequest, _caller=Depends(require_scope("write"))):
+        fields = {}
+        if req.draft_subject is not None:
+            fields["draft_subject"] = req.draft_subject.strip()
+        if req.draft_reply is not None:
+            fields["draft_reply"] = req.draft_reply
+        if req.status is not None:
+            fields["status"] = req.status
+        updated = orch.reg.update_inbox_draft(draft_id, fields)
+        if not updated:
+            raise HTTPException(status_code=404, detail=f"no draft '{draft_id}'")
+        return {"draft": updated}
+
+    def _deliver_single_draft(draft_id: str) -> dict:
+        drf = orch.reg.get_inbox_draft(draft_id)
+        if not drf:
+            raise HTTPException(status_code=404, detail=f"no draft '{draft_id}'")
+        if not drf["draft_reply"].strip():
+            raise HTTPException(status_code=400, detail="Draft reply cannot be empty.")
+        try:
+            if drf["channel"] == "email":
+                send_email_reply(
+                    to_addr=drf["sender_addr"],
+                    subject=drf["draft_subject"] or drf["subject"],
+                    body=drf["draft_reply"],
+                    in_reply_to=drf["in_reply_to"],
+                    registry=orch.reg,
+                )
+            elif drf["channel"] == "whatsapp":
+                send_whatsapp_message(drf["sender_addr"], drf["draft_reply"], registry=orch.reg)
+                orch.reg.mark_whatsapp_read(chat_id=drf["sender_addr"])
+            else:
+                raise HTTPException(status_code=400, detail=f"unsupported channel '{drf['channel']}'")
+        except (EmailConfigError, WhatsAppError, Exception) as e:
+            orch.reg.update_inbox_draft(draft_id, {"error": str(e)})
+            raise HTTPException(status_code=502, detail=str(e))
+        return orch.reg.update_inbox_draft(
+            draft_id, {"status": "sent", "error": "", "sent_at": time.time()}
+        )
+
+    @app.post("/api/v1/inbox/drafts/{draft_id}/send", tags=["Inbox"], summary="Send an edited Email or WhatsApp draft")
+    def send_inbox_draft(draft_id: str, _caller=Depends(require_scope("write"))):
+        updated = _deliver_single_draft(draft_id)
+        return {"sent": True, "draft": updated}
+
+    @app.post("/api/v1/inbox/drafts/send-batch", tags=["Inbox"], summary="Send multiple approved/edited drafts at once")
+    def send_inbox_drafts_batch(req: BatchSendDraftsRequest, _caller=Depends(require_scope("write"))):
+        results = []
+        for did in req.draft_ids:
+            try:
+                upd = _deliver_single_draft(did)
+                results.append({"id": did, "sent": True, "draft": upd})
+            except HTTPException as e:
+                results.append({"id": did, "sent": False, "error": e.detail})
+        return {"results": results}
+
+    @app.delete("/api/v1/inbox/drafts/{draft_id}", tags=["Inbox"], summary="Delete a reply draft")
+    def delete_inbox_draft(draft_id: str, _caller=Depends(require_scope("write"))):
+        if not orch.reg.delete_inbox_draft(draft_id):
+            raise HTTPException(status_code=404, detail=f"no draft '{draft_id}'")
+        return {"deleted": True, "id": draft_id}
+
+    @app.get("/api/v1/inbox/email/config", tags=["Inbox"], summary="Get Email IMAP/SMTP config (password masked)")
+    def get_email_settings(_caller=Depends(require_scope("admin"))):
+        c = get_email_config(orch.reg)
+        return {
+            "configured": bool(c["imap_host"] and c["user"] and c["password"]),
+            "imap_host": c["imap_host"],
+            "imap_port": c["imap_port"],
+            "smtp_host": c["smtp_host"],
+            "smtp_port": c["smtp_port"],
+            "user": c["user"],
+            "has_password": bool(c["password"]),
+            "folder": c["folder"],
+        }
+
+    @app.put("/api/v1/inbox/email/config", tags=["Inbox"], summary="Save Email IMAP/SMTP credentials persistently")
+    def save_email_settings(req: EmailConfigUpdateRequest, _caller=Depends(require_scope("admin"))):
+        prev = orch.reg.get_setting("email_config", {}) or {}
+        new_cfg = {
+            "imap_host": req.imap_host.strip(),
+            "imap_port": int(req.imap_port),
+            "smtp_host": req.smtp_host.strip(),
+            "smtp_port": int(req.smtp_port),
+            "user": req.user.strip(),
+            "password": req.password if (req.password is not None and req.password != "") else prev.get("password", ""),
+            "folder": req.folder.strip() or "INBOX",
+        }
+        orch.reg.set_setting("email_config", new_cfg)
+        return {"saved": True, "configured": is_email_configured(orch.reg)}
+
+    def _save_email_cache(scan_last: int, emails: list[dict]) -> dict:
+        snap = {
+            "fetched_at": time.time(),
+            "scanned_last": scan_last,
+            "unread_count": len(emails),
+            "emails": emails,
+        }
+        orch.reg.set_setting("email_unread_cache", snap)
+        return snap
+
+    @app.get(
+        "/api/v1/inbox/email/unread",
+        tags=["Inbox"],
+        summary="Get saved unread emails or refresh from IMAP (persisted until next fetch)",
+    )
+    def list_unread_emails_endpoint(
+        scan_last: int = Query(100, ge=1, le=500),
+        refresh: bool = Query(False, description="Set true to fetch fresh emails from IMAP and replace cache"),
+        _caller=Depends(require_scope("read")),
+    ):
+        last_summary = orch.reg.get_setting("email_summary_cache")
+        if not refresh:
+            cached = orch.reg.get_setting("email_unread_cache")
+            if isinstance(cached, dict) and "emails" in cached:
+                return {**cached, "cached": True, "last_summary": last_summary}
+            return {
+                "fetched_at": None,
+                "scanned_last": scan_last,
+                "unread_count": 0,
+                "emails": [],
+                "cached": True,
+                "last_summary": last_summary,
+            }
+        try:
+            emails = fetch_unread_from_last(orch.reg, scan_last=scan_last, body_chars=3000)
+        except EmailConfigError as e:
+            raise HTTPException(status_code=400, detail=str(e))
+        except Exception as e:
+            raise HTTPException(status_code=502, detail=str(e))
+        snap = _save_email_cache(scan_last, emails)
+        return {**snap, "cached": False, "last_summary": last_summary}
+
+    @app.post(
+        "/api/v1/inbox/email/draft-one",
+        tags=["Inbox"],
+        summary="Prepare an editable reply draft for a single selected unread email",
+    )
+    def draft_single_email_endpoint(req: EmailSingleDraftRequest, caller=Depends(require_scope("write"))):
+        _check_user_quota(caller)
+        start_usage_tracking()
+        sample = [{
+            "uid": req.uid or "single",
+            "message_id": req.message_id,
+            "from": f"{req.sender_name} <{req.sender_email}>",
+            "sender_name": req.sender_name or req.sender_email,
+            "sender_email": req.sender_email,
+            "subject": req.subject,
+            "date": "",
+            "is_automated": False,
+            "body": req.body,
+        }]
+        try:
+            with op_lock:
+                res = orch.batch_prepare_email_drafts(
+                    scan_last=1, instructions=req.instructions, max_drafts=1, emails_override=sample
+                )
+        except Exception as e:
+            finish_usage_tracking()
+            raise HTTPException(status_code=502, detail=str(e))
+        usage = finish_usage_tracking()
+        quota = _record_caller_usage(caller, usage)
+        if not res["drafts"]:
+            # Fallback: create blank editable draft so user can still edit & send directly
+            drf = orch.reg.create_inbox_draft(
+                channel="email",
+                external_id=req.message_id or f"uid:{req.uid}",
+                sender_name=req.sender_name or req.sender_email,
+                sender_addr=req.sender_email,
+                subject=req.subject,
+                in_reply_to=req.message_id,
+                incoming_body=req.body,
+                draft_reply="",
+                summary=req.subject,
+            )
+            res["drafts"] = [drf]
+        return {"draft": res["drafts"][0], "usage": usage, "user_quota": quota}
+
+    @app.post(
+        "/api/v1/inbox/email/summarize",
+        tags=["Inbox"],
+        summary="Summarize important unread emails from the last 100 inbox messages",
+    )
+    def summarize_emails_endpoint(req: EmailSummarizeRequest, caller=Depends(require_scope("write"))):
+        _check_user_quota(caller)
+        start_usage_tracking()
+        try:
+            emails = fetch_unread_from_last(orch.reg, scan_last=req.scan_last, body_chars=3000)
+            snap = _save_email_cache(req.scan_last, emails)
+            with op_lock:
+                res = orch.summarize_important_emails(scan_last=req.scan_last, emails_override=emails)
+        except EmailConfigError as e:
+            finish_usage_tracking()
+            raise HTTPException(status_code=400, detail=str(e))
+        except Exception as e:
+            usage = finish_usage_tracking()
+            if usage["total_tokens"] > 0:
+                _record_caller_usage(caller, usage)
+            raise HTTPException(status_code=502, detail=str(e))
+        usage = finish_usage_tracking()
+        quota = _record_caller_usage(caller, usage)
+        summary_snap = {**res, "fetched_at": snap["fetched_at"]}
+        orch.reg.set_setting("email_summary_cache", summary_snap)
+        return {**summary_snap, "usage": usage, "user_quota": quota}
+
+    @app.post(
+        "/api/v1/inbox/email/batch-draft",
+        tags=["Inbox"],
+        summary="Batch-prepare editable reply drafts for all important unread emails from the last 100",
+    )
+    def batch_draft_emails_endpoint(req: EmailBatchDraftRequest, caller=Depends(require_scope("write"))):
+        _check_user_quota(caller)
+        start_usage_tracking()
+        try:
+            emails = fetch_unread_from_last(orch.reg, scan_last=req.scan_last, body_chars=3000)
+            snap = _save_email_cache(req.scan_last, emails)
+            with op_lock:
+                res = orch.batch_prepare_email_drafts(
+                    scan_last=req.scan_last,
+                    instructions=req.instructions,
+                    max_drafts=req.max_drafts,
+                    emails_override=emails,
+                )
+        except EmailConfigError as e:
+            finish_usage_tracking()
+            raise HTTPException(status_code=400, detail=str(e))
+        except Exception as e:
+            usage = finish_usage_tracking()
+            if usage["total_tokens"] > 0:
+                _record_caller_usage(caller, usage)
+            raise HTTPException(status_code=502, detail=str(e))
+        usage = finish_usage_tracking()
+        quota = _record_caller_usage(caller, usage)
+        return {**res, "fetched_at": snap["fetched_at"], "usage": usage, "user_quota": quota}
+
+    # --- Personal WhatsApp via WAHA QR Sidecar -------------------------------
+
+    @app.get("/api/v1/inbox/whatsapp/status", tags=["Inbox"], summary="Get personal WhatsApp (WAHA) session status")
+    def whatsapp_status(_caller=Depends(require_scope("read"))):
+        return wa_get_status(orch.reg)
+
+    @app.post("/api/v1/inbox/whatsapp/start", tags=["Inbox"], summary="Start personal WhatsApp session for QR pairing")
+    def whatsapp_start(_caller=Depends(require_scope("admin"))):
+        try:
+            data = wa_start_session(orch.reg)
+        except WhatsAppError as e:
+            raise HTTPException(status_code=502, detail=str(e))
+        return {"started": True, "session": data}
+
+    @app.post("/api/v1/inbox/whatsapp/stop", tags=["Inbox"], summary="Stop personal WhatsApp session")
+    def whatsapp_stop(_caller=Depends(require_scope("admin"))):
+        try:
+            data = wa_stop_session(orch.reg)
+        except WhatsAppError as e:
+            raise HTTPException(status_code=502, detail=str(e))
+        return {"stopped": True, "session": data}
+
+    @app.get("/api/v1/inbox/whatsapp/qr", tags=["Inbox"], summary="Fetch live WhatsApp QR code PNG for pairing")
+    def whatsapp_qr(_caller=Depends(require_scope("admin"))):
+        try:
+            img_bytes, ctype = fetch_qr_image(orch.reg)
+        except WhatsAppError as e:
+            raise HTTPException(status_code=502, detail=str(e))
+        return Response(content=img_bytes, media_type=ctype)
+
+    @app.post(
+        "/api/v1/inbox/whatsapp/enable-sync",
+        tags=["Inbox"],
+        summary="Enable WAHA NOWEB chat store and restart session to load all unread WhatsApp messages",
+    )
+    def whatsapp_enable_sync(_caller=Depends(require_scope("admin"))):
+        try:
+            data = wa_enable_store(orch.reg)
+        except WhatsAppError as e:
+            raise HTTPException(status_code=502, detail=str(e))
+        return {"enabled": True, "session": data}
+
+    @app.get(
+        "/api/v1/inbox/whatsapp/unread",
+        tags=["Inbox"],
+        summary="Show all unread WhatsApp messages (from WAHA store + incoming webhook log)",
+    )
+    def whatsapp_unread_list(limit: int = Query(50, ge=1, le=200), _caller=Depends(require_scope("read"))):
+        local_items = orch.reg.list_unread_whatsapp_messages(limit=limit)
+        store_enabled = False
+        hint = ""
+        live_items = []
+        try:
+            res = wa_fetch_unread(orch.reg, limit=limit)
+            store_enabled = bool(res.get("store_enabled"))
+            live_items = res.get("items") or []
+            hint = res.get("hint", "")
+        except WhatsAppError as e:
+            hint = str(e)
+
+        # Merge live store chats and local webhook unread messages (avoid duplicate chat_id if store has it)
+        seen_chats = {x["chat_id"] for x in live_items}
+        merged = list(live_items) + [x for x in local_items if x["chat_id"] not in seen_chats]
+        return {
+            "store_enabled": store_enabled,
+            "unread_count": len(merged),
+            "messages": merged,
+            "hint": hint,
+        }
+
+    @app.post(
+        "/api/v1/inbox/whatsapp/unread/{msg_id}/read",
+        tags=["Inbox"],
+        summary="Mark a logged unread WhatsApp message as read",
+    )
+    def whatsapp_mark_read(msg_id: str, _caller=Depends(require_scope("write"))):
+        orch.reg.mark_whatsapp_read(msg_id=msg_id)
+        return {"ok": True}
+
+    @app.post("/api/v1/inbox/whatsapp/manual-draft", tags=["Inbox"], summary="Generate an editable WhatsApp reply draft")
+    def whatsapp_manual_draft(req: WhatsAppManualDraftRequest, caller=Depends(require_scope("write"))):
+        _check_user_quota(caller)
+        start_usage_tracking()
+        try:
+            with op_lock:
+                drf = orch.draft_whatsapp_reply(
+                    sender_name=req.sender_name,
+                    chat_id=req.chat_id,
+                    incoming_text=req.incoming_text,
+                    instructions=req.instructions,
+                )
+        except Exception as e:
+            finish_usage_tracking()
+            raise HTTPException(status_code=502, detail=str(e))
+        usage = finish_usage_tracking()
+        quota = _record_caller_usage(caller, usage)
+        return {"draft": drf, "usage": usage, "user_quota": quota}
+
+    @app.post(
+        "/api/v1/webhooks/whatsapp",
+        tags=["Inbox"],
+        summary="Webhook receiver for WAHA incoming personal WhatsApp messages",
+    )
+    async def whatsapp_webhook(request: Request):
+        wa_cfg = get_whatsapp_config(orch.reg)
+        secret = wa_cfg["webhook_secret"]
+        if secret:
+            hdr = request.headers.get("x-hive-webhook-secret", "")
+            if not hmac.compare_digest(hdr, secret):
+                raise HTTPException(status_code=401, detail="invalid webhook secret")
+        body = await request.json()
+        event = body.get("event")
+        payload = body.get("payload") or {}
+        if event != "message":
+            return {"ignored": True, "event": event}
+        if payload.get("fromMe"):
+            return {"ignored": True, "reason": "fromMe"}
+        chat_id = str(payload.get("from") or payload.get("chatId") or "")
+        text = str(payload.get("body") or "").strip()
+        if not chat_id or not text or chat_id.endswith("@broadcast") or chat_id == "status@broadcast":
+            return {"ignored": True, "reason": "empty_or_broadcast"}
+        sender_name = str(
+            (payload.get("_data") or {}).get("notifyName")
+            or payload.get("pushName")
+            or chat_id.split("@")[0]
+        )
+        ext_id = str(payload.get("id") or "")
+        orch.reg.save_whatsapp_message(ext_id, chat_id, sender_name, text)
+        try:
+            with op_lock:
+                drf = orch.draft_whatsapp_reply(
+                    sender_name=sender_name,
+                    chat_id=chat_id,
+                    incoming_text=text,
+                    external_id=ext_id,
+                )
+        except Exception as e:
+            # Save raw incoming message as a draft even if LLM fails so nothing is lost
+            drf = orch.reg.create_inbox_draft(
+                channel="whatsapp",
+                external_id=ext_id,
+                sender_name=sender_name,
+                sender_addr=chat_id,
+                subject="WhatsApp Message",
+                incoming_body=text,
+                draft_reply="",
+                summary=f"(Auto-draft failed: {e})",
+            )
+        return {"ok": True, "draft_id": drf["id"]}
+
+    # --- Per-User Personal Bot & Notification Settings (Telegram + WhatsApp) ---
+
+    @app.get(
+        "/api/v1/me/channels",
+        tags=["My Bots"],
+        summary="Get the signed-in user's personal Telegram bot & WhatsApp alert settings",
+    )
+    def get_my_channels(caller=Depends(require_scope("read"))):
+        u = caller.get("user")
+        if not u:
+            raise HTTPException(status_code=400, detail="Sign in as a user account to configure personal bots.")
+        cfg = orch.reg.get_user_channels(u["id"], include_secret=False)
+        return {"channels": cfg, "telegram_worker": tg_manager.user_status(u["id"])}
+
+    @app.put(
+        "/api/v1/me/channels",
+        tags=["My Bots"],
+        summary="Save the signed-in user's Telegram bot & WhatsApp schedule notification settings",
+    )
+    def update_my_channels(req: UserChannelsUpdateRequest, caller=Depends(require_scope("write"))):
+        u = caller.get("user")
+        if not u:
+            raise HTTPException(status_code=400, detail="Sign in as a user account to configure personal bots.")
+        cfg = orch.reg.save_user_channels(
+            u["id"],
+            telegram_bot_token=req.telegram_bot_token,
+            clear_telegram_token=req.clear_telegram_token,
+            telegram_chat_id=req.telegram_chat_id,
+            telegram_enabled=req.telegram_enabled,
+            regenerate_link_code=req.regenerate_link_code,
+            whatsapp_target=req.whatsapp_target,
+            whatsapp_enabled=req.whatsapp_enabled,
+        )
+        tg_manager.sync_user(u["id"])
+        return {"channels": cfg, "telegram_worker": tg_manager.user_status(u["id"])}
+
+    @app.post(
+        "/api/v1/me/channels/test-telegram",
+        tags=["My Bots"],
+        summary="Send a test message through the user's configured Telegram bot",
+    )
+    def test_my_telegram(caller=Depends(require_scope("write"))):
+        u = caller.get("user")
+        if not u:
+            raise HTTPException(status_code=400, detail="Sign in as a user account.")
+        cfg = orch.reg.get_user_channels(u["id"], include_secret=True)
+        if not cfg["telegram_bot_token"]:
+            raise HTTPException(status_code=400, detail="Save your Telegram bot token first.")
+        if not cfg["telegram_chat_id"]:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Telegram chat not linked yet. Send '/link {cfg['telegram_link_code']}' to your bot first.",
+            )
+        try:
+            tg_send_message(
+                cfg["telegram_bot_token"],
+                cfg["telegram_chat_id"],
+                f"Hello {u['username']}! Your agent-hive Telegram bot is connected and ready.",
+            )
+        except TelegramError as e:
+            raise HTTPException(status_code=502, detail=str(e))
+        return {"sent": True}
+
+    @app.post(
+        "/api/v1/me/channels/test-whatsapp",
+        tags=["My Bots"],
+        summary="Send a test scheduled-task notification to the user's WhatsApp number",
+    )
+    def test_my_whatsapp(caller=Depends(require_scope("write"))):
+        u = caller.get("user")
+        if not u:
+            raise HTTPException(status_code=400, detail="Sign in as a user account.")
+        cfg = orch.reg.get_user_channels(u["id"], include_secret=False)
+        target = cfg.get("whatsapp_target", "").strip()
+        if not target:
+            st = wa_get_status(orch.reg)
+            target = str((st.get("me") or {}).get("id") or "").strip()
+        if not target:
+            raise HTTPException(
+                status_code=400,
+                detail="Enter your WhatsApp phone number (with country code) or connect WhatsApp in Inbox.",
+            )
+        try:
+            send_whatsapp_message(
+                target,
+                f"Hello {u['username']}! Your agent-hive WhatsApp schedule notifications are working.",
+                registry=orch.reg,
+            )
+        except WhatsAppError as e:
+            raise HTTPException(status_code=502, detail=str(e))
+        return {"sent": True, "target": target}
 
     return app
 
