@@ -258,6 +258,7 @@ class WhatsAppChatSettingUpdateRequest(BaseModel):
     is_group: Optional[bool] = None
     auto_reply: Optional[bool] = None
     wait_seconds: Optional[int] = Field(None, ge=0, le=86400, description="Custom settle/wait time in seconds before grouping & replying")
+    wait_minutes: Optional[float] = Field(None, ge=0, le=1440, description="Optional settle/wait time in minutes (converted to seconds if wait_seconds is omitted)")
     history_limit: Optional[int] = Field(None, ge=1, le=100, description="Custom conversation context length (1-100 recent messages)")
     context: Optional[str] = Field(None, max_length=2000)
 
@@ -1888,12 +1889,15 @@ def create_app(orch, api_token: Optional[str] = None) -> FastAPI:
         cid = canonical_chat_id(chat_id)
         if not cid:
             raise HTTPException(status_code=400, detail="Valid chat_id or phone number is required.")
+        ws = req.wait_seconds
+        if ws is None and req.wait_minutes is not None:
+            ws = int(round(float(req.wait_minutes) * 60))
         saved = orch.reg.upsert_whatsapp_chat_setting(
             cid,
             chat_name=req.chat_name,
             is_group=req.is_group,
             auto_reply=req.auto_reply,
-            wait_seconds=req.wait_seconds,
+            wait_seconds=ws,
             history_limit=req.history_limit,
             context=req.context,
         )

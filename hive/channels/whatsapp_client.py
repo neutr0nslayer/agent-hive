@@ -13,9 +13,9 @@ import urllib.request
 from .formatting import md_to_whatsapp
 
 MAX_WA_CHUNK = 2800
-WA_DEFAULT_WAIT_SECONDS = 120   # Default per-chat wait (120s) so senders finish typing all messages
+WA_DEFAULT_WAIT_SECONDS = 120   # Default per-chat wait (120s / 2m) so senders finish typing all messages
 WA_SYNC_INTERVAL_SECONDS = 120  # Alias kept for backward compatibility
-WA_SYNC_POLL_SECONDS = 15       # Lightweight loop tick to honor custom per-chat wait times promptly
+WA_SYNC_POLL_SECONDS = 5        # Lightweight 5s tick so custom per-chat waits (in sec or min) fire promptly
 WA_HISTORY_CONTEXT_LIMIT = 20   # Default recent messages of the chat included as conversation context
 WA_MAX_HISTORY_LIMIT = 100      # Customizable per-chat conversation context length up to 100 messages
 
