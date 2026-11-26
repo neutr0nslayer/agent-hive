@@ -156,10 +156,27 @@ CREATE TABLE IF NOT EXISTS inbox_drafts (
 CREATE TABLE IF NOT EXISTS whatsapp_messages (
     id TEXT PRIMARY KEY,
     chat_id TEXT NOT NULL,
+    chat_name TEXT NOT NULL DEFAULT '',
+    is_group INTEGER NOT NULL DEFAULT 0,
     sender_name TEXT NOT NULL,
     body TEXT NOT NULL,
     is_read INTEGER NOT NULL DEFAULT 0,
+    processed INTEGER NOT NULL DEFAULT 0,
     received_at REAL NOT NULL
+);
+CREATE TABLE IF NOT EXISTS whatsapp_chat_settings (
+    chat_id TEXT PRIMARY KEY,
+    chat_name TEXT NOT NULL DEFAULT '',
+    is_group INTEGER NOT NULL DEFAULT 0,
+    auto_reply INTEGER NOT NULL DEFAULT 0,
+    wait_seconds INTEGER NOT NULL DEFAULT 120,
+    history_limit INTEGER NOT NULL DEFAULT 20,
+    context TEXT NOT NULL DEFAULT '',
+    last_synced_sig TEXT NOT NULL DEFAULT '',
+    last_synced_at REAL,
+    last_auto_reply_at REAL,
+    auto_reply_count INTEGER NOT NULL DEFAULT 0,
+    updated_at REAL NOT NULL
 );
 CREATE TABLE IF NOT EXISTS user_channels (
     user_id TEXT PRIMARY KEY,
@@ -237,6 +254,20 @@ class Registry:
                 self.db.execute("ALTER TABLE scheduled_tasks ADD COLUMN notify_telegram INTEGER NOT NULL DEFAULT 0")
             if "notify_whatsapp" not in cols:
                 self.db.execute("ALTER TABLE scheduled_tasks ADD COLUMN notify_whatsapp INTEGER NOT NULL DEFAULT 0")
+
+            wa_cols = {r["name"] for r in self.db.execute("PRAGMA table_info(whatsapp_messages)")}
+            if "chat_name" not in wa_cols:
+                self.db.execute("ALTER TABLE whatsapp_messages ADD COLUMN chat_name TEXT NOT NULL DEFAULT ''")
+            if "is_group" not in wa_cols:
+                self.db.execute("ALTER TABLE whatsapp_messages ADD COLUMN is_group INTEGER NOT NULL DEFAULT 0")
+            if "processed" not in wa_cols:
+                self.db.execute("ALTER TABLE whatsapp_messages ADD COLUMN processed INTEGER NOT NULL DEFAULT 0")
+
+            wac_cols = {r["name"] for r in self.db.execute("PRAGMA table_info(whatsapp_chat_settings)")}
+            if "wait_seconds" not in wac_cols:
+                self.db.execute("ALTER TABLE whatsapp_chat_settings ADD COLUMN wait_seconds INTEGER NOT NULL DEFAULT 120")
+            if "history_limit" not in wac_cols:
+                self.db.execute("ALTER TABLE whatsapp_chat_settings ADD COLUMN history_limit INTEGER NOT NULL DEFAULT 20")
             self.db.commit()
 
     # --- settings (persisted across container restarts) ----------------------
@@ -1008,19 +1039,33 @@ class Registry:
         priority: str = "medium",
         summary: str = "",
         draft_subject: str = "",
+        status: str = "pending",
+        sent_at: float = None,
     ) -> dict:
         now = time.time()
         did = f"drf_{secrets.token_hex(6)}"
         with self._lock:
-            if external_id:
+            if external_id and status == "pending":
                 existing = self.db.execute(
-                    "SELECT * FROM inbox_drafts WHERE channel=? AND external_id=? LIMIT 1",
+                    "SELECT * FROM inbox_drafts WHERE channel=? AND external_id=? AND status='pending' LIMIT 1",
                     (channel, external_id),
                 ).fetchone()
-                if existing and existing["status"] == "pending":
+                if existing:
                     self.db.execute(
-                        "UPDATE inbox_drafts SET priority=?, summary=?, draft_subject=?, draft_reply=?, updated_at=? WHERE id=?",
-                        (priority, summary, draft_subject or existing["draft_subject"], draft_reply, now, existing["id"]),
+                        "UPDATE inbox_drafts SET sender_name=?, sender_addr=?, subject=?, incoming_body=?, "
+                        "priority=?, summary=?, draft_subject=?, draft_reply=?, updated_at=? WHERE id=?",
+                        (
+                            sender_name,
+                            sender_addr,
+                            subject or existing["subject"],
+                            incoming_body,
+                            priority,
+                            summary,
+                            draft_subject or existing["draft_subject"],
+                            draft_reply,
+                            now,
+                            existing["id"],
+                        ),
                     )
                     self.db.commit()
                     r = self.db.execute("SELECT * FROM inbox_drafts WHERE id=?", (existing["id"],)).fetchone()
@@ -1028,12 +1073,12 @@ class Registry:
             self.db.execute(
                 "INSERT INTO inbox_drafts (id, channel, external_id, sender_name, sender_addr, subject, "
                 "in_reply_to, incoming_body, priority, summary, draft_subject, draft_reply, status, "
-                "created_at, updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                "created_at, updated_at, sent_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                 (
                     did, channel, external_id, sender_name, sender_addr, subject,
                     in_reply_to, incoming_body, priority, summary,
                     draft_subject or (f"Re: {subject}" if subject and not subject.lower().startswith("re:") else subject),
-                    draft_reply, "pending", now, now,
+                    draft_reply, status, now, now, sent_at,
                 ),
             )
             self.db.commit()
@@ -1087,45 +1132,251 @@ class Registry:
             self.db.commit()
             return n > 0
 
-    # --- incoming WhatsApp unread messages log -------------------------------
-    def save_whatsapp_message(self, msg_id: str, chat_id: str, sender_name: str, body: str) -> dict:
+    # --- incoming WhatsApp unread messages log & per-chat auto-reply/context ---
+    def save_whatsapp_message(
+        self,
+        msg_id: str,
+        chat_id: str,
+        sender_name: str,
+        body: str,
+        *,
+        chat_name: str = "",
+        is_group: bool = False,
+        timestamp: float = None,
+    ) -> dict:
         mid = (msg_id or f"wa_{secrets.token_hex(6)}").strip()
-        now = time.time()
+        ts = float(timestamp) if timestamp else time.time()
+        grp_flag = 1 if (is_group or chat_id.endswith("@g.us")) else 0
+        cname = (chat_name or "").strip()
         with self._lock:
             self.db.execute(
-                "INSERT OR IGNORE INTO whatsapp_messages (id, chat_id, sender_name, body, is_read, received_at) "
-                "VALUES (?,?,?,?,0,?)",
-                (mid, chat_id, sender_name, body, now),
+                "INSERT OR IGNORE INTO whatsapp_messages "
+                "(id, chat_id, chat_name, is_group, sender_name, body, is_read, processed, received_at) "
+                "VALUES (?,?,?,?,?,?,0,0,?)",
+                (mid, chat_id, cname, grp_flag, sender_name, body, ts),
             )
+            if cname:
+                self.db.execute(
+                    "INSERT INTO whatsapp_chat_settings (chat_id, chat_name, is_group, updated_at) VALUES (?,?,?,?) "
+                    "ON CONFLICT(chat_id) DO UPDATE SET "
+                    "chat_name=CASE WHEN whatsapp_chat_settings.chat_name='' THEN excluded.chat_name ELSE whatsapp_chat_settings.chat_name END, "
+                    "is_group=excluded.is_group",
+                    (chat_id, cname, grp_flag, time.time()),
+                )
             self.db.commit()
-        return {"id": mid, "chat_id": chat_id, "sender_name": sender_name, "body": body, "received_at": now}
+        return {
+            "id": mid,
+            "chat_id": chat_id,
+            "chat_name": cname,
+            "is_group": bool(grp_flag),
+            "sender_name": sender_name,
+            "body": body,
+            "received_at": ts,
+        }
 
-    def list_unread_whatsapp_messages(self, limit: int = 100) -> list[dict]:
+    def list_unread_whatsapp_messages(self, limit: int = 200) -> list[dict]:
         with self._lock:
             rows = self.db.execute(
-                "SELECT * FROM whatsapp_messages WHERE is_read=0 ORDER BY received_at DESC LIMIT ?",
+                "SELECT * FROM whatsapp_messages WHERE is_read=0 ORDER BY received_at ASC LIMIT ?",
                 (limit,),
             )
             return [
                 {
                     "id": r["id"],
                     "chat_id": r["chat_id"],
+                    "chat_name": r["chat_name"] or "",
+                    "is_group": bool(r["is_group"]),
                     "sender_name": r["sender_name"],
                     "unread_count": 1,
                     "body": r["body"],
+                    "processed": bool(r["processed"]),
                     "timestamp": r["received_at"],
                     "source": "webhook",
                 }
                 for r in rows
             ]
 
+    def list_grouped_unread_whatsapp(self) -> dict[str, dict]:
+        """Group all local unread WhatsApp messages by chat_id in chronological order."""
+        msgs = self.list_unread_whatsapp_messages(limit=500)
+        grouped: dict[str, dict] = {}
+        for m in msgs:
+            cid = m["chat_id"]
+            g = grouped.get(cid)
+            if not g:
+                g = {
+                    "chat_id": cid,
+                    "chat_name": m["chat_name"] or m["sender_name"] or cid.split("@")[0],
+                    "is_group": m["is_group"] or cid.endswith("@g.us"),
+                    "messages": [],
+                    "unprocessed_count": 0,
+                    "first_ts": m["timestamp"],
+                    "last_ts": m["timestamp"],
+                }
+                grouped[cid] = g
+            if m["chat_name"] and (not g["chat_name"] or g["chat_name"] == cid.split("@")[0]):
+                g["chat_name"] = m["chat_name"]
+            g["messages"].append({
+                "id": m["id"],
+                "from_me": False,
+                "sender": m["sender_name"],
+                "body": m["body"],
+                "timestamp": m["timestamp"],
+            })
+            if not m["processed"]:
+                g["unprocessed_count"] += 1
+            if m["timestamp"]:
+                g["last_ts"] = max(g["last_ts"] or 0, m["timestamp"])
+        return grouped
+
+    def list_chat_whatsapp_history_local(self, chat_id: str, limit: int = 20) -> list[dict]:
+        """Fallback local message history for a chat_id ordered oldest -> newest."""
+        with self._lock:
+            rows = self.db.execute(
+                "SELECT * FROM (SELECT * FROM whatsapp_messages WHERE chat_id=? ORDER BY received_at DESC LIMIT ?) "
+                "ORDER BY received_at ASC",
+                (chat_id, limit),
+            )
+            return [
+                {
+                    "id": r["id"],
+                    "from_me": False,
+                    "sender": r["sender_name"],
+                    "body": r["body"],
+                    "timestamp": r["received_at"],
+                }
+                for r in rows
+            ]
+
+    def mark_whatsapp_processed(self, chat_id: str):
+        with self._lock:
+            self.db.execute("UPDATE whatsapp_messages SET processed=1 WHERE chat_id=? AND is_read=0", (chat_id,))
+            self.db.commit()
+
     def mark_whatsapp_read(self, msg_id: str = None, chat_id: str = None):
         with self._lock:
             if msg_id:
-                self.db.execute("UPDATE whatsapp_messages SET is_read=1 WHERE id=?", (msg_id,))
+                self.db.execute("UPDATE whatsapp_messages SET is_read=1, processed=1 WHERE id=?", (msg_id,))
             if chat_id:
-                self.db.execute("UPDATE whatsapp_messages SET is_read=1 WHERE chat_id=?", (chat_id,))
+                self.db.execute("UPDATE whatsapp_messages SET is_read=1, processed=1 WHERE chat_id=?", (chat_id,))
             self.db.commit()
+
+    @staticmethod
+    def _wa_chat_setting_row(r) -> dict:
+        ws = int(r["wait_seconds"] if ("wait_seconds" in r.keys() and r["wait_seconds"] is not None) else 120)
+        hl = max(1, min(100, int(r["history_limit"] if ("history_limit" in r.keys() and r["history_limit"] is not None) else 20)))
+        return {
+            "chat_id": r["chat_id"],
+            "chat_name": r["chat_name"] or r["chat_id"].split("@")[0],
+            "is_group": bool(r["is_group"]) or str(r["chat_id"]).endswith("@g.us"),
+            "auto_reply": bool(r["auto_reply"]),
+            "wait_seconds": ws,
+            "history_limit": hl,
+            "context": r["context"] or "",
+            "last_synced_sig": r["last_synced_sig"] or "",
+            "last_synced_at": r["last_synced_at"],
+            "last_auto_reply_at": r["last_auto_reply_at"],
+            "auto_reply_count": int(r["auto_reply_count"] or 0),
+            "updated_at": r["updated_at"],
+        }
+
+    def get_whatsapp_chat_setting(self, chat_id: str) -> dict:
+        cid = (chat_id or "").strip()
+        with self._lock:
+            r = self.db.execute("SELECT * FROM whatsapp_chat_settings WHERE chat_id=?", (cid,)).fetchone()
+            if r:
+                return self._wa_chat_setting_row(r)
+        return {
+            "chat_id": cid,
+            "chat_name": cid.split("@")[0] if cid else "",
+            "is_group": cid.endswith("@g.us"),
+            "auto_reply": False,
+            "wait_seconds": 120,
+            "history_limit": 20,
+            "context": "",
+            "last_synced_sig": "",
+            "last_synced_at": None,
+            "last_auto_reply_at": None,
+            "auto_reply_count": 0,
+            "updated_at": None,
+        }
+
+    def list_whatsapp_chat_settings(self) -> list[dict]:
+        with self._lock:
+            rows = self.db.execute(
+                "SELECT * FROM whatsapp_chat_settings ORDER BY auto_reply DESC, updated_at DESC"
+            )
+            return [self._wa_chat_setting_row(r) for r in rows]
+
+    def upsert_whatsapp_chat_setting(
+        self,
+        chat_id: str,
+        *,
+        chat_name: str = None,
+        is_group: bool = None,
+        auto_reply: bool = None,
+        wait_seconds: int = None,
+        history_limit: int = None,
+        context: str = None,
+        last_synced_sig: str = None,
+        last_synced_at: float = None,
+        bump_auto_reply: bool = False,
+    ) -> dict:
+        cid = (chat_id or "").strip()
+        if not cid:
+            raise ValueError("chat_id is required")
+        now = time.time()
+        with self._lock:
+            cur = self.get_whatsapp_chat_setting(cid)
+            new_name = cur["chat_name"]
+            if chat_name is not None and chat_name.strip():
+                new_name = chat_name.strip()
+            new_grp = cid.endswith("@g.us") if is_group is None else bool(is_group or cid.endswith("@g.us"))
+            new_auto = cur["auto_reply"] if auto_reply is None else bool(auto_reply)
+            new_wait = cur["wait_seconds"] if wait_seconds is None else max(0, min(86400, int(wait_seconds)))
+            new_hl = cur["history_limit"] if history_limit is None else max(1, min(100, int(history_limit)))
+            new_ctx = cur["context"] if context is None else str(context).strip()
+            new_sig = cur["last_synced_sig"] if last_synced_sig is None else str(last_synced_sig)
+            if auto_reply is True and not cur["auto_reply"] and last_synced_sig is None:
+                new_sig = ""
+            new_sync_ts = cur["last_synced_at"] if last_synced_at is None else float(last_synced_at)
+            new_auto_ts = now if bump_auto_reply else cur["last_auto_reply_at"]
+            new_auto_cnt = cur["auto_reply_count"] + (1 if bump_auto_reply else 0)
+
+            self.db.execute(
+                "INSERT INTO whatsapp_chat_settings "
+                "(chat_id, chat_name, is_group, auto_reply, wait_seconds, history_limit, context, last_synced_sig, last_synced_at, "
+                "last_auto_reply_at, auto_reply_count, updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?) "
+                "ON CONFLICT(chat_id) DO UPDATE SET "
+                "chat_name=excluded.chat_name, is_group=excluded.is_group, auto_reply=excluded.auto_reply, "
+                "wait_seconds=excluded.wait_seconds, history_limit=excluded.history_limit, context=excluded.context, "
+                "last_synced_sig=excluded.last_synced_sig, last_synced_at=excluded.last_synced_at, "
+                "last_auto_reply_at=excluded.last_auto_reply_at, auto_reply_count=excluded.auto_reply_count, "
+                "updated_at=excluded.updated_at",
+                (
+                    cid,
+                    new_name,
+                    1 if new_grp else 0,
+                    1 if new_auto else 0,
+                    new_wait,
+                    new_hl,
+                    new_ctx,
+                    new_sig,
+                    new_sync_ts,
+                    new_auto_ts,
+                    new_auto_cnt,
+                    now,
+                ),
+            )
+            self.db.commit()
+            r = self.db.execute("SELECT * FROM whatsapp_chat_settings WHERE chat_id=?", (cid,)).fetchone()
+            return self._wa_chat_setting_row(r)
+
+    def delete_whatsapp_chat_setting(self, chat_id: str) -> bool:
+        with self._lock:
+            n = self.db.execute("DELETE FROM whatsapp_chat_settings WHERE chat_id=?", (chat_id.strip(),)).rowcount
+            self.db.commit()
+            return n > 0
 
     # --- per-user bot & notification channel settings ------------------------
     @staticmethod

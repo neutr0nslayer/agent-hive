@@ -868,16 +868,24 @@
           <div id="inbox-sub-whatsapp" class="hidden">
             <div class="card" style="margin-bottom:16px;">
               <div class="section-head">
-                <h3 class="section-title">Personal WhatsApp (QR Pairing &amp; Unread Sync)</h3>
-                <span id="waStoreBadge" class="badge">sync: …</span>
+                <div>
+                  <h3 class="section-title">Personal WhatsApp — Per-Chat Wait (sec), Context Length (up to 100) &amp; Auto-Reply</h3>
+                  <p class="section-sub">Waits each chat's custom <strong>seconds</strong> (default <strong>120s</strong>) so senders finish all messages, then reads <strong>all unread messages</strong> + up to <strong>100 recent chat messages</strong> to auto-reply or prepare one grouped draft.</p>
+                </div>
+                <div style="display:flex;gap:7px;align-items:center;flex-wrap:wrap;">
+                  <span id="waSyncTimerBadge" class="badge info" style="font-family:var(--mono);">per-chat sync: …</span>
+                  <span id="waStoreBadge" class="badge">sync: …</span>
+                </div>
               </div>
               <p id="waStatusNote" style="margin:0 0 12px;color:var(--muted);font-size:.85rem;">
-                Link your personal WhatsApp via the WAHA Docker sidecar (<code>docker compose --profile whatsapp up -d</code>). Incoming messages automatically create editable drafts below.
+                Link your personal WhatsApp via the WAHA Docker sidecar (<code>docker compose --profile whatsapp up -d</code>). Incoming bursts wait for each chat's configured settle timer before replying.
               </p>
               <div class="row" style="margin-bottom:6px;">
                 <button type="button" class="primary sm hidden" id="waStartBtn" onclick="startWhatsApp()">Start &amp; Show QR</button>
+                <button type="button" class="primary sm" id="btnSyncWaNow" onclick="syncWhatsAppNow()">Sync Now (Group &amp; Reply)</button>
+                <button type="button" class="sm" id="btnShowUnreadWa" onclick="loadUnreadWhatsApp()">Grouped Unread Chats</button>
+                <button type="button" class="sm" id="btnToggleWaChats" onclick="toggleWaChatsCard()">Auto-Reply &amp; Chat Contexts</button>
                 <button type="button" class="sm" onclick="refreshWhatsApp(true)">Refresh Status / QR</button>
-                <button type="button" class="primary sm" id="btnShowUnreadWa" onclick="loadUnreadWhatsApp()">Show All Unread Messages</button>
                 <button type="button" class="sm warn hidden" id="waEnableSyncBtn" onclick="enableWhatsAppSync()">Enable Full Unread Sync</button>
                 <button type="button" class="sm danger hidden" id="waStopBtn" onclick="stopWhatsApp()">Disconnect</button>
               </div>
@@ -887,11 +895,63 @@
               </div>
             </div>
 
-            <!-- All Unread WhatsApp Messages Viewer -->
+            <!-- Per-Chat Auto-Reply & Optional Context Manager -->
+            <div id="waChatRulesCard" class="card" style="margin-bottom:16px;">
+              <div class="section-head">
+                <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;">
+                  <h3 class="section-title">Per-Chat Auto-Reply &amp; Optional Context (Groups &amp; People)</h3>
+                  <span id="waAutoReplyCountBadge" class="badge ok">0 auto-reply ON</span>
+                </div>
+                <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
+                  <button class="sm" onclick="loadWhatsAppChats()">Refresh Chats</button>
+                  <button class="sm" onclick="$('waChatRulesCard').classList.add('hidden')">Hide</button>
+                </div>
+              </div>
+              <div class="row" style="margin-bottom:12px;">
+                <label class="grow">Search Group or Person
+                  <input id="waChatSearch" oninput="renderWhatsAppChats()" placeholder="Filter by name, phone number, or @g.us group ID…" />
+                </label>
+                <label style="width:170px;">Filter
+                  <select id="waChatFilter" onchange="renderWhatsAppChats()">
+                    <option value="all" selected>All Chats</option>
+                    <option value="auto">Auto-Reply ON</option>
+                    <option value="groups">Groups Only</option>
+                    <option value="direct">People Only</option>
+                  </select>
+                </label>
+              </div>
+              <details style="margin-bottom:12px;">
+                <summary style="font-size:.81rem;color:var(--accent);">+ Add phone number or group ID manually</summary>
+                <div class="row" style="margin-top:10px;padding:12px;border-radius:10px;background:var(--surface-2);border:1px solid var(--border);">
+                  <label style="width:220px;">Phone or Chat ID
+                    <input id="waNewChatId" placeholder="e.g. 8801712345678 or ...@g.us" style="font-family:var(--mono);" />
+                  </label>
+                  <label style="width:165px;">Display Name
+                    <input id="waNewChatName" placeholder="e.g. Study Group" />
+                  </label>
+                  <label style="width:115px;" title="Number of recent chat messages (1 to 100) included as conversation context">Context (1–100)
+                    <input id="waNewChatHist" type="number" min="1" max="100" step="1" value="20" style="font-family:var(--mono);" />
+                  </label>
+                  <label style="width:105px;" title="How many seconds to wait after the last message before grouping & replying (e.g. 120 = 120s, 30 = 30s, 0 = instant)">Wait (sec)
+                    <input id="waNewChatWait" type="number" min="0" max="86400" step="1" value="120" style="font-family:var(--mono);" />
+                  </label>
+                  <label class="grow">Optional Context / Persona
+                    <input id="waNewChatCtx" placeholder="e.g. Reply politely in short casual sentences" />
+                  </label>
+                  <label style="flex-direction:row;align-items:center;gap:6px;color:var(--text);padding:8px 2px;cursor:pointer;">
+                    <input type="checkbox" id="waNewChatAuto" checked /> Auto-Reply
+                  </label>
+                  <button type="button" class="sm primary" onclick="addManualWaChatRule()">Save Chat Rule</button>
+                </div>
+              </details>
+              <div id="waChatsList" style="display:flex;flex-direction:column;gap:10px;max-height:460px;overflow-y:auto;"></div>
+            </div>
+
+            <!-- Grouped Unread WhatsApp Chats Viewer -->
             <div id="unreadWaCard" class="card hidden" style="margin-bottom:16px;">
               <div class="section-head">
-                <div style="display:flex;align-items:center;gap:8px;">
-                  <h3 class="section-title">All Unread WhatsApp Messages</h3>
+                <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;">
+                  <h3 class="section-title">Grouped Unread WhatsApp Chats (All Unread + Up to 100 Msg Context)</h3>
                   <span id="unreadWaCount" class="badge ok">0</span>
                 </div>
                 <div style="display:flex;gap:8px;">
@@ -900,7 +960,7 @@
                 </div>
               </div>
               <div id="unreadWaHint" class="alert warn hidden"></div>
-              <div id="unreadWaList" style="display:flex;flex-direction:column;gap:10px;max-height:480px;overflow-y:auto;"></div>
+              <div id="unreadWaList" style="display:flex;flex-direction:column;gap:12px;max-height:560px;overflow-y:auto;"></div>
             </div>
 
             <!-- WhatsApp Reply Drafts Queue -->
@@ -2428,6 +2488,38 @@ let inboxSub = 'email';
 let draftsByChannel = { email: [], whatsapp: [] };
 let unreadEmailsCache = [];
 let unreadWaCache = [];
+let waChatsCache = [];
+let waSyncMeta = null;
+
+function formatWaitSec(waitSec) {
+  const s = waitSec == null ? 120 : Math.max(0, Math.round(Number(waitSec)));
+  return `${s}s`;
+}
+
+setInterval(() => {
+  if (!waSyncMeta || !$('waSyncTimerBadge')) return;
+  const badge = $('waSyncTimerBadge');
+  if (waSyncMeta.syncing) {
+    badge.textContent = 'syncing & grouping now…';
+    badge.className = 'badge warn';
+    return;
+  }
+  const nowSec = Date.now() / 1000;
+  if (waSyncMeta.waiting_chats > 0 && waSyncMeta.next_ready_at) {
+    const remReady = Math.max(0, Math.round(waSyncMeta.next_ready_at - nowSec));
+    badge.textContent = `waiting: ${waSyncMeta.waiting_chats} chat(s) · next in ${remReady}s`;
+    badge.className = 'badge warn';
+    if (remReady === 0 && inboxSub === 'whatsapp' && !$('appShell').classList.contains('hidden')) {
+      setTimeout(() => { refreshWhatsApp(false); loadUnreadWhatsApp(true); loadChannelDrafts('whatsapp'); }, 3000);
+    }
+    return;
+  }
+  const lastPart = waSyncMeta.last_sync_at
+    ? ` · checked ${new Date(waSyncMeta.last_sync_at * 1000).toLocaleTimeString()}`
+    : '';
+  badge.textContent = `per-chat wait (default 120s)${lastPart}`;
+  badge.className = 'badge info';
+}, 1000);
 
 function showInboxSub(sub) {
   inboxSub = sub;
@@ -2436,7 +2528,11 @@ function showInboxSub(sub) {
   $('inbox-sub-email').classList.toggle('hidden', sub !== 'email');
   $('inbox-sub-whatsapp').classList.toggle('hidden', sub !== 'whatsapp');
   if (sub === 'email') loadChannelDrafts('email');
-  if (sub === 'whatsapp') { refreshWhatsApp(false); loadChannelDrafts('whatsapp'); }
+  if (sub === 'whatsapp') {
+    refreshWhatsApp(false);
+    loadWhatsAppChats();
+    loadChannelDrafts('whatsapp');
+  }
 }
 
 async function loadInboxPage() {
@@ -2445,6 +2541,7 @@ async function loadInboxPage() {
     loadChannelDrafts('email'),
     loadChannelDrafts('whatsapp'),
     refreshWhatsApp(false),
+    loadWhatsAppChats(),
     loadEmailConfigIfAdmin(),
   ]);
 }
@@ -2621,6 +2718,7 @@ async function refreshWhatsApp(showQrIfPending) {
   const r = await fetch('/api/v1/inbox/whatsapp/status');
   if (!r.ok) return;
   const d = await r.json();
+  if (d.sync) waSyncMeta = d.sync;
   const st = d.status || 'OFFLINE';
   const cls = st === 'WORKING' ? 'ok' : st === 'SCAN_QR_CODE' ? 'warn' : 'err';
   $('waStatusBadge').textContent = 'whatsapp: ' + st;
@@ -2631,7 +2729,7 @@ async function refreshWhatsApp(showQrIfPending) {
   $('waEnableSyncBtn').classList.toggle('hidden', !(isAdmin && st === 'WORKING' && !d.store_enabled));
 
   if (st === 'WORKING' && d.me) {
-    $('waStatusNote').textContent = `Connected as ${d.me.pushName || d.me.id || 'personal WhatsApp'}. Click "Show All Unread Messages" or review incoming drafts below.`;
+    $('waStatusNote').textContent = `Connected as ${d.me.pushName || d.me.id || 'personal WhatsApp'}. Honors each chat's wait in seconds (default 120s) and context length (up to 100 msgs), plus all unread messages.`;
     $('waQrBox').classList.add('hidden');
   } else if (st === 'SCAN_QR_CODE') {
     $('waStatusNote').textContent = 'Ready to link — scan the QR code below using WhatsApp on your phone.';
@@ -2646,6 +2744,178 @@ async function refreshWhatsApp(showQrIfPending) {
   }
 }
 
+async function syncWhatsAppNow() {
+  const btn = $('btnSyncWaNow');
+  btn.disabled = true;
+  btn.textContent = 'Syncing & Grouping…';
+  try {
+    const r = await fetch('/api/v1/inbox/whatsapp/sync', { method: 'POST' });
+    const d = await r.json().catch(() => ({}));
+    if (!r.ok) return toast(d.detail || 'Sync failed');
+    waSyncMeta = d;
+    if (d.skipped) {
+      toast(d.reason || 'WhatsApp sync skipped');
+    } else {
+      toast(`Synced ${d.synced_chats || 0} chat(s) · ${d.auto_replied || 0} auto-replied · ${d.drafts_updated || 0} draft(s) prepared`);
+    }
+    await Promise.all([
+      loadUnreadWhatsApp(true),
+      loadWhatsAppChats(),
+      loadChannelDrafts('whatsapp'),
+    ]);
+  } finally {
+    btn.disabled = false;
+    btn.textContent = 'Sync Now (Group & Reply)';
+  }
+}
+
+function toggleWaChatsCard() {
+  const el = $('waChatRulesCard');
+  el.classList.toggle('hidden');
+  if (!el.classList.contains('hidden')) loadWhatsAppChats();
+}
+
+async function loadWhatsAppChats() {
+  const r = await fetch('/api/v1/inbox/whatsapp/chats?limit=100');
+  if (!r.ok) return;
+  const d = await r.json();
+  if (d.sync) waSyncMeta = d.sync;
+  waChatsCache = d.chats || [];
+  renderWhatsAppChats();
+}
+
+function renderWhatsAppChats() {
+  const q = ($('waChatSearch').value || '').trim().toLowerCase();
+  const flt = $('waChatFilter').value;
+  const enabledCount = waChatsCache.filter(c => c.auto_reply).length;
+  $('waAutoReplyCountBadge').textContent = `${enabledCount} auto-reply ON`;
+  $('waAutoReplyCountBadge').className = 'badge ' + (enabledCount > 0 ? 'ok' : '');
+
+  const filtered = waChatsCache.filter(c => {
+    if (flt === 'auto' && !c.auto_reply) return false;
+    if (flt === 'groups' && !c.is_group) return false;
+    if (flt === 'direct' && c.is_group) return false;
+    if (q && !`${c.chat_name} ${c.chat_id} ${c.context || ''}`.toLowerCase().includes(q)) return false;
+    return true;
+  });
+
+  const box = $('waChatsList');
+  if (!filtered.length) {
+    box.innerHTML = '<div style="color:var(--muted);font-size:.85rem;padding:8px 2px;">No matching WhatsApp chats found. Connect WhatsApp or add a chat rule manually above.</div>';
+    return;
+  }
+
+  box.innerHTML = filtered.map((c) => {
+    const realIdx = waChatsCache.indexOf(c);
+    const kindBadge = c.is_group
+      ? '<span class="badge info">GROUP</span>'
+      : '<span class="badge">PERSON</span>';
+    const unreadBadge = c.unread_count > 0
+      ? `<span class="badge warn">${c.unread_count} unread</span>`
+      : '';
+    const autoCountBadge = c.auto_reply_count > 0
+      ? `<span class="badge ok">${c.auto_reply_count} auto-sent</span>`
+      : '';
+    const waitSecVal = c.wait_seconds == null ? 120 : Math.max(0, Math.round(Number(c.wait_seconds)));
+    const histLimVal = c.history_limit == null ? 20 : Math.max(1, Math.min(100, Math.round(Number(c.history_limit))));
+    return `
+      <div class="card" style="background:var(--surface-2);padding:13px 15px;">
+        <div style="display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:8px;">
+          <div style="display:flex;align-items:center;gap:7px;flex-wrap:wrap;">
+            <strong>${esc(c.chat_name)}</strong>
+            ${kindBadge}
+            <span class="badge info">ctx: ${histLimVal} msgs</span>
+            <span class="badge info">wait: ${formatWaitSec(waitSecVal)}</span>
+            ${unreadBadge}
+            ${autoCountBadge}
+            <span style="color:var(--muted);font-family:var(--mono);font-size:.75rem;">${esc(c.chat_id)}</span>
+          </div>
+          <div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap;">
+            <label style="flex-direction:row;align-items:center;gap:6px;color:var(--muted);font-size:.78rem;margin:0;" title="Number of recent chat messages (1 to 100) included as conversation context">
+              Context (1–100)
+              <input id="wac_hist_${realIdx}" type="number" min="1" max="100" step="1" value="${histLimVal}" onchange="saveWaChatSetting(${realIdx}, 'hist')" style="width:68px;padding:4px 7px;font-family:var(--mono);font-size:.79rem;" />
+            </label>
+            <label style="flex-direction:row;align-items:center;gap:6px;color:var(--muted);font-size:.78rem;margin:0;" title="Wait duration in seconds after last message before grouping & replying (default 120s, 0 = instant)">
+              Wait (sec)
+              <input id="wac_wait_${realIdx}" type="number" min="0" max="86400" step="1" value="${waitSecVal}" onchange="saveWaChatSetting(${realIdx}, 'wait')" style="width:78px;padding:4px 7px;font-family:var(--mono);font-size:.79rem;" />
+            </label>
+            <label style="flex-direction:row;align-items:center;gap:7px;color:var(--text);font-weight:600;cursor:pointer;margin:0;">
+              <input type="checkbox" id="wac_auto_${realIdx}" ${c.auto_reply ? 'checked' : ''} onchange="saveWaChatSetting(${realIdx}, 'auto')" />
+              <span style="color:${c.auto_reply ? 'var(--green)' : 'var(--muted)'};">Auto-Reply ${c.auto_reply ? 'ON' : 'OFF'}</span>
+            </label>
+          </div>
+        </div>
+        <div class="row" style="align-items:center;">
+          <input id="wac_ctx_${realIdx}" class="grow" value="${esc(c.context || '')}" placeholder="Optional context for ${esc(c.chat_name)} (e.g. tone, relationship, language, what to answer…)" />
+          <button type="button" class="sm primary" onclick="saveWaChatSetting(${realIdx}, 'save')">Save</button>
+        </div>
+      </div>
+    `;
+  }).join('');
+}
+
+async function saveWaChatSetting(idx, reason) {
+  const c = waChatsCache[idx];
+  if (!c) return;
+  const auto_reply = $(`wac_auto_${idx}`).checked;
+  const waitRaw = Number($(`wac_wait_${idx}`).value);
+  const wait_seconds = Number.isFinite(waitRaw) && waitRaw >= 0 ? Math.round(waitRaw) : 120;
+  const histRaw = Number($(`wac_hist_${idx}`).value);
+  const history_limit = Number.isFinite(histRaw) ? Math.max(1, Math.min(100, Math.round(histRaw))) : 20;
+  const context = $(`wac_ctx_${idx}`).value.trim();
+  const r = await fetch(`/api/v1/inbox/whatsapp/chats/${encodeURIComponent(c.chat_id)}`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      chat_name: c.chat_name,
+      is_group: c.is_group,
+      auto_reply,
+      wait_seconds,
+      history_limit,
+      context,
+    }),
+  });
+  const d = await r.json().catch(() => ({}));
+  if (!r.ok) return toast(d.detail || 'Failed to save chat setting');
+  waChatsCache[idx] = { ...c, ...d.chat };
+  renderWhatsAppChats();
+  if (reason === 'auto') {
+    toast(`Auto-Reply ${auto_reply ? 'ENABLED' : 'DISABLED'} for ${c.chat_name}`);
+  } else if (reason === 'wait') {
+    toast(`Wait set to ${d.chat.wait_seconds}s for ${c.chat_name}`);
+  } else if (reason === 'hist') {
+    toast(`Context length set to ${d.chat.history_limit} messages for ${c.chat_name}`);
+  } else {
+    toast(`Saved settings (${d.chat.history_limit} ctx msgs · ${d.chat.wait_seconds}s wait) for ${c.chat_name}`);
+  }
+}
+
+async function addManualWaChatRule() {
+  const cid = $('waNewChatId').value.trim();
+  if (!cid) return toast('Enter a phone number or group chat ID');
+  const chat_name = $('waNewChatName').value.trim();
+  const histRaw = Number($('waNewChatHist').value);
+  const history_limit = Number.isFinite(histRaw) ? Math.max(1, Math.min(100, Math.round(histRaw))) : 20;
+  const waitRaw = Number($('waNewChatWait').value);
+  const wait_seconds = Number.isFinite(waitRaw) && waitRaw >= 0 ? Math.round(waitRaw) : 120;
+  const context = $('waNewChatCtx').value.trim();
+  const auto_reply = $('waNewChatAuto').checked;
+  const r = await fetch(`/api/v1/inbox/whatsapp/chats/${encodeURIComponent(cid)}`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ chat_name: chat_name || null, auto_reply, wait_seconds, history_limit, context }),
+  });
+  const d = await r.json().catch(() => ({}));
+  if (!r.ok) return toast(d.detail || 'Failed to add chat rule');
+  $('waNewChatId').value = '';
+  $('waNewChatName').value = '';
+  $('waNewChatHist').value = '20';
+  $('waNewChatWait').value = '120';
+  $('waNewChatCtx').value = '';
+  toast(`Saved rule for ${d.chat.chat_name} (${d.chat.history_limit} ctx msgs · ${d.chat.wait_seconds}s wait)`);
+  loadWhatsAppChats();
+}
+
 async function enableWhatsAppSync() {
   toast('Enabling NOWEB unread chat sync & restarting WAHA session…');
   const r = await fetch('/api/v1/inbox/whatsapp/enable-sync', { method: 'POST' });
@@ -2653,72 +2923,170 @@ async function enableWhatsAppSync() {
   if (!r.ok) return toast(d.detail || 'Could not enable unread sync');
   setTimeout(async () => {
     await refreshWhatsApp(false);
+    await loadWhatsAppChats();
     await loadUnreadWhatsApp();
   }, 3500);
 }
 
-async function loadUnreadWhatsApp() {
+async function loadUnreadWhatsApp(silent = false) {
   const btn = $('btnShowUnreadWa');
-  btn.disabled = true; btn.textContent = 'Loading Unread…';
+  if (!silent) { btn.disabled = true; btn.textContent = 'Grouping Unread…'; }
   try {
     const r = await fetch('/api/v1/inbox/whatsapp/unread');
     const d = await r.json().catch(() => ({}));
-    if (!r.ok) return toast(d.detail || 'Failed to load unread WhatsApp messages');
+    if (!r.ok) {
+      if (!silent) toast(d.detail || 'Failed to load unread WhatsApp chats');
+      return;
+    }
+    if (d.sync) waSyncMeta = d.sync;
     unreadWaCache = d.messages || [];
-    $('unreadWaCard').classList.remove('hidden');
-    $('unreadWaCount').textContent = `${unreadWaCache.length} unread`;
+    if (!silent || unreadWaCache.length || !$('unreadWaCard').classList.contains('hidden')) {
+      $('unreadWaCard').classList.remove('hidden');
+    }
+    const totalMsgs = d.total_unread_messages || unreadWaCache.length;
+    $('unreadWaCount').textContent = `${unreadWaCache.length} chat(s) · ${totalMsgs} unread msg(s)`;
     $('unreadWaHint').classList.toggle('hidden', !d.hint);
     if (d.hint) $('unreadWaHint').textContent = d.hint + (d.store_enabled ? '' : ' Click "Enable Full Unread Sync" above to sync existing unread WhatsApp chats.');
 
     const box = $('unreadWaList');
     if (!unreadWaCache.length) {
-      box.innerHTML = '<div style="color:var(--muted);font-size:.85rem;">No unread WhatsApp messages found.</div>';
+      box.innerHTML = '<div style="color:var(--muted);font-size:.85rem;">No unread WhatsApp messages right now.</div>';
       return;
     }
-    box.innerHTML = unreadWaCache.map((m, idx) => `
-      <div class="card card-interactive" style="background:var(--surface-2);padding:14px;">
-        <div style="display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:6px;">
-          <div style="display:flex;align-items:center;gap:7px;flex-wrap:wrap;">
-            <strong>${esc(m.sender_name)}</strong>
-            <span class="badge ok">${m.unread_count || 1} unread</span>
-            <span class="badge">${esc(m.source)}</span>
-            <span style="color:var(--muted);font-family:var(--mono);font-size:.76rem;">${esc(m.chat_id)}</span>
+    box.innerHTML = unreadWaCache.map((m, idx) => {
+      const kindBadge = m.is_group
+        ? '<span class="badge info">GROUP</span>'
+        : '<span class="badge">PERSON</span>';
+      const histText = m.history_text || '';
+      const histCount = m.history_count || (m.recent_history || []).length;
+      const histLimVal = m.history_limit == null ? 20 : Math.max(1, Math.min(100, Math.round(Number(m.history_limit))));
+      const waitSecVal = m.wait_seconds == null ? 120 : Math.max(0, Math.round(Number(m.wait_seconds)));
+      const waitBadge = m.wait_remaining_seconds > 0
+        ? `<span class="badge warn">waiting ${m.wait_remaining_seconds}s (of ${waitSecVal}s)</span>`
+        : `<span class="badge info">wait: ${waitSecVal}s</span>`;
+      return `
+        <div class="card card-interactive" style="background:var(--surface-2);padding:15px;">
+          <div style="display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:8px;">
+            <div style="display:flex;align-items:center;gap:7px;flex-wrap:wrap;">
+              <strong>${esc(m.chat_name || m.sender_name)}</strong>
+              ${kindBadge}
+              <span class="badge ok">${m.unread_count || 1} unread msg(s)</span>
+              <span class="badge">${histCount} / ${histLimVal} ctx msgs</span>
+              ${waitBadge}
+              <span style="color:var(--muted);font-family:var(--mono);font-size:.75rem;">${esc(m.chat_id)}</span>
+            </div>
+            <div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap;">
+              <label style="flex-direction:row;align-items:center;gap:5px;color:var(--muted);font-size:.77rem;margin:0;" title="Conversation context length (1 to 100 messages)">
+                Context (1–100)
+                <input id="unr_hist_${idx}" type="number" min="1" max="100" step="1" value="${histLimVal}" onchange="saveUnreadCardChatRule(${idx}, 'hist')" style="width:66px;padding:3px 6px;font-family:var(--mono);font-size:.78rem;" />
+              </label>
+              <label style="flex-direction:row;align-items:center;gap:5px;color:var(--muted);font-size:.77rem;margin:0;" title="Custom settle wait in seconds for this chat">
+                Wait (sec)
+                <input id="unr_wait_${idx}" type="number" min="0" max="86400" step="1" value="${waitSecVal}" onchange="saveUnreadCardChatRule(${idx}, 'wait')" style="width:74px;padding:3px 6px;font-family:var(--mono);font-size:.78rem;" />
+              </label>
+              <label style="flex-direction:row;align-items:center;gap:6px;color:var(--text);font-size:.79rem;cursor:pointer;margin:0;">
+                <input type="checkbox" id="unr_auto_${idx}" ${m.auto_reply ? 'checked' : ''} onchange="saveUnreadCardChatRule(${idx}, 'auto')" />
+                Auto-Reply
+              </label>
+              <span style="color:var(--muted);font-size:.75rem;">${esc(formatTs(m.timestamp))}</span>
+            </div>
           </div>
-          <span style="color:var(--muted);font-size:.75rem;">${esc(formatTs(m.timestamp))}</span>
+
+          <div style="font-size:.77rem;color:var(--muted);margin-bottom:4px;font-weight:600;">All Unread Messages (${m.unread_count || 1}):</div>
+          <pre style="white-space:pre-wrap;max-height:200px;margin:0 0 8px;">${esc(m.body)}</pre>
+
+          ${histText ? `
+            <details style="margin-bottom:10px;">
+              <summary style="font-size:.8rem;color:var(--accent);">View Last ${histCount} Chat Messages (Conversation Context, limit ${histLimVal})</summary>
+              <pre style="white-space:pre-wrap;max-height:220px;">${esc(histText)}</pre>
+            </details>
+          ` : ''}
+
+          <div class="row" style="margin-bottom:10px;align-items:center;">
+            <input id="unr_ctx_${idx}" class="grow" value="${esc(m.context || '')}" placeholder="Optional context for this chat (saved per chat & used when replying)…" />
+            <button type="button" class="sm" onclick="saveUnreadCardChatRule(${idx}, 'save')">Save</button>
+          </div>
+
+          <div class="row" style="justify-content:flex-end;">
+            <button class="sm primary" onclick="draftSingleWhatsApp(${idx})">Prepare Grouped Reply Draft</button>
+            <button class="sm" onclick="markWaUnreadRead('${esc(m.chat_id)}')">Mark Chat Read</button>
+          </div>
         </div>
-        <pre style="white-space:pre-wrap;max-height:180px;margin-bottom:8px;">${esc(m.body)}</pre>
-        <div class="row" style="justify-content:flex-end;">
-          <button class="sm primary" onclick="draftSingleWhatsApp(${idx})">Prepare Draft Reply</button>
-          ${m.source === 'webhook' ? `<button class="sm" onclick="markWaUnreadRead('${esc(m.id)}')">Mark Read</button>` : ''}
-        </div>
-      </div>
-    `).join('');
+      `;
+    }).join('');
   } finally {
-    btn.disabled = false; btn.textContent = 'Show All Unread Messages';
+    if (!silent) { btn.disabled = false; btn.textContent = 'Grouped Unread Chats'; }
+  }
+}
+
+async function saveUnreadCardChatRule(idx, reason) {
+  const m = unreadWaCache[idx];
+  if (!m) return;
+  const auto_reply = $(`unr_auto_${idx}`).checked;
+  const histRaw = Number($(`unr_hist_${idx}`).value);
+  const history_limit = Number.isFinite(histRaw) ? Math.max(1, Math.min(100, Math.round(histRaw))) : 20;
+  const waitRaw = Number($(`unr_wait_${idx}`).value);
+  const wait_seconds = Number.isFinite(waitRaw) && waitRaw >= 0 ? Math.round(waitRaw) : 120;
+  const context = $(`unr_ctx_${idx}`).value.trim();
+  const r = await fetch(`/api/v1/inbox/whatsapp/chats/${encodeURIComponent(m.chat_id)}`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      chat_name: m.chat_name || m.sender_name,
+      is_group: m.is_group,
+      auto_reply,
+      wait_seconds,
+      history_limit,
+      context,
+    }),
+  });
+  const d = await r.json().catch(() => ({}));
+  if (!r.ok) return toast(d.detail || 'Failed to update chat setting');
+  m.auto_reply = d.chat.auto_reply;
+  m.wait_seconds = d.chat.wait_seconds;
+  m.history_limit = d.chat.history_limit;
+  m.context = d.chat.context;
+  loadWhatsAppChats();
+  if (reason === 'auto') {
+    toast(`Auto-Reply ${m.auto_reply ? 'ON' : 'OFF'} for ${m.chat_name || m.sender_name}`);
+  } else if (reason === 'wait') {
+    toast(`Wait set to ${d.chat.wait_seconds}s for ${m.chat_name || m.sender_name}`);
+  } else if (reason === 'hist') {
+    toast(`Context set to ${d.chat.history_limit} messages for ${m.chat_name || m.sender_name}`);
+    loadUnreadWhatsApp(true);
+  } else {
+    toast(`Saved settings (${d.chat.history_limit} ctx msgs · ${d.chat.wait_seconds}s wait) for ${m.chat_name || m.sender_name}`);
   }
 }
 
 async function draftSingleWhatsApp(idx) {
   const m = unreadWaCache[idx];
   if (!m) return;
-  toast(`Drafting WhatsApp reply to ${m.sender_name}…`);
+  const ctxInput = $(`unr_ctx_${idx}`);
+  const histInput = $(`unr_hist_${idx}`);
+  const histVal = histInput ? Math.max(1, Math.min(100, Math.round(Number(histInput.value) || 20))) : (m.history_limit || 20);
+  if ((ctxInput && ctxInput.value.trim() !== (m.context || '')) || histVal !== (m.history_limit || 20)) {
+    await saveUnreadCardChatRule(idx, 'save');
+  }
+  toast(`Reading all unread + last ${histVal} messages for ${m.chat_name || m.sender_name}…`);
   const r = await fetch('/api/v1/inbox/whatsapp/manual-draft', {
     method: 'POST', headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
-      sender_name: m.sender_name,
+      sender_name: m.chat_name || m.sender_name,
       chat_id: m.chat_id,
+      history_limit: histVal,
       incoming_text: m.body,
     }),
   });
   const d = await r.json().catch(() => ({}));
   if (!r.ok) return toast(d.detail || 'Draft failed');
   if (d.user_quota && meUser) { meUser.tokens_used = d.user_quota.tokens_used; renderUserHeader(); }
-  toast('Editable WhatsApp draft added below');
+  toast('Grouped WhatsApp reply draft ready below');
   loadChannelDrafts('whatsapp');
 }
 
-async function markWaUnreadRead(id) {
-  await fetch(`/api/v1/inbox/whatsapp/unread/${encodeURIComponent(id)}/read`, { method: 'POST' });
+async function markWaUnreadRead(chatOrMsgId) {
+  await fetch(`/api/v1/inbox/whatsapp/unread/${encodeURIComponent(chatOrMsgId)}/read`, { method: 'POST' });
   loadUnreadWhatsApp();
 }
 

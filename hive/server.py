@@ -24,12 +24,18 @@ from .channels.email_client import (
 )
 from .channels.telegram_bot import TelegramBotManager, TelegramError, tg_send_message
 from .channels.whatsapp_client import (
+    WA_HISTORY_CONTEXT_LIMIT,
     WhatsAppError,
+    WhatsAppSyncManager,
+    canonical_chat_id,
     enable_store_and_restart as wa_enable_store,
+    fetch_chat_context as wa_fetch_chat_context,
+    fetch_known_chats as wa_fetch_known_chats,
     fetch_qr_image,
     fetch_unread_chats as wa_fetch_unread,
     get_session_status as wa_get_status,
     get_whatsapp_config,
+    mark_chat_read_waha,
     send_whatsapp_message,
     start_session as wa_start_session,
     stop_session as wa_stop_session,
@@ -241,9 +247,19 @@ class BatchSendDraftsRequest(BaseModel):
 
 class WhatsAppManualDraftRequest(BaseModel):
     sender_name: str = Field(..., min_length=1)
-    chat_id: str = Field(..., min_length=3, description="Phone number or WA chatId (e.g. 15551234567@c.us)")
-    incoming_text: str = Field(..., min_length=1)
+    chat_id: str = Field(..., min_length=3, description="Phone number or WA chatId (e.g. 15551234567@c.us or 120363...@g.us)")
+    incoming_text: str = ""
+    history_limit: Optional[int] = Field(None, ge=1, le=100, description="Number of recent chat messages (1-100) for context")
     instructions: str = ""
+
+
+class WhatsAppChatSettingUpdateRequest(BaseModel):
+    chat_name: Optional[str] = None
+    is_group: Optional[bool] = None
+    auto_reply: Optional[bool] = None
+    wait_seconds: Optional[int] = Field(None, ge=0, le=86400, description="Custom settle/wait time in seconds before grouping & replying")
+    history_limit: Optional[int] = Field(None, ge=1, le=100, description="Custom conversation context length (1-100 recent messages)")
+    context: Optional[str] = Field(None, max_length=2000)
 
 
 class EmailSingleDraftRequest(BaseModel):
@@ -393,14 +409,17 @@ def create_app(orch, api_token: Optional[str] = None) -> FastAPI:
     orch.log = _capture_log
     scheduler = TaskScheduler(orch, op_lock, tls)
     tg_manager = TelegramBotManager(orch, scheduler, op_lock, tls)
+    wa_sync = WhatsAppSyncManager(orch, op_lock)
 
     @asynccontextmanager
     async def lifespan(_app: FastAPI):
         scheduler.start()
         tg_manager.start_all()
+        wa_sync.start()
         try:
             yield
         finally:
+            wa_sync.stop()
             tg_manager.stop_all()
             scheduler.stop()
 
@@ -1592,7 +1611,7 @@ def create_app(orch, api_token: Optional[str] = None) -> FastAPI:
                 )
             elif drf["channel"] == "whatsapp":
                 send_whatsapp_message(drf["sender_addr"], drf["draft_reply"], registry=orch.reg)
-                orch.reg.mark_whatsapp_read(chat_id=drf["sender_addr"])
+                mark_chat_read_waha(orch.reg, drf["sender_addr"])
             else:
                 raise HTTPException(status_code=400, detail=f"unsupported channel '{drf['channel']}'")
         except (EmailConfigError, WhatsAppError, Exception) as e:
@@ -1797,11 +1816,17 @@ def create_app(orch, api_token: Optional[str] = None) -> FastAPI:
         quota = _record_caller_usage(caller, usage)
         return {**res, "fetched_at": snap["fetched_at"], "usage": usage, "user_quota": quota}
 
-    # --- Personal WhatsApp via WAHA QR Sidecar -------------------------------
+    # --- Personal WhatsApp via WAHA QR Sidecar (2-Min Grouped Sync + Per-Chat Auto-Reply) ---
 
-    @app.get("/api/v1/inbox/whatsapp/status", tags=["Inbox"], summary="Get personal WhatsApp (WAHA) session status")
+    @app.get("/api/v1/inbox/whatsapp/status", tags=["Inbox"], summary="Get personal WhatsApp (WAHA) session & 2-min sync status")
     def whatsapp_status(_caller=Depends(require_scope("read"))):
-        return wa_get_status(orch.reg)
+        st = wa_get_status(orch.reg)
+        st["sync"] = wa_sync.status_dict()
+        return st
+
+    @app.post("/api/v1/inbox/whatsapp/sync", tags=["Inbox"], summary="Trigger grouped WhatsApp unread sync & auto-reply immediately")
+    def whatsapp_sync_now(_caller=Depends(require_scope("write"))):
+        return wa_sync.sync_once(manual=True)
 
     @app.post("/api/v1/inbox/whatsapp/start", tags=["Inbox"], summary="Start personal WhatsApp session for QR pairing")
     def whatsapp_start(_caller=Depends(require_scope("admin"))):
@@ -1840,54 +1865,125 @@ def create_app(orch, api_token: Optional[str] = None) -> FastAPI:
         return {"enabled": True, "session": data}
 
     @app.get(
+        "/api/v1/inbox/whatsapp/chats",
+        tags=["Inbox"],
+        summary="List WhatsApp groups & contacts with per-chat auto-reply and optional context settings",
+    )
+    def whatsapp_chats_list(limit: int = Query(80, ge=1, le=200), _caller=Depends(require_scope("read"))):
+        chats = wa_fetch_known_chats(orch.reg, limit=limit)
+        return {
+            "chats": chats,
+            "auto_reply_enabled_count": sum(1 for c in chats if c.get("auto_reply")),
+            "sync": wa_sync.status_dict(),
+        }
+
+    @app.put(
+        "/api/v1/inbox/whatsapp/chats/{chat_id:path}",
+        tags=["Inbox"],
+        summary="Configure auto-reply, wait seconds, context length (1-100), and optional custom context per chat",
+    )
+    def whatsapp_update_chat_setting(
+        chat_id: str, req: WhatsAppChatSettingUpdateRequest, _caller=Depends(require_scope("write"))
+    ):
+        cid = canonical_chat_id(chat_id)
+        if not cid:
+            raise HTTPException(status_code=400, detail="Valid chat_id or phone number is required.")
+        saved = orch.reg.upsert_whatsapp_chat_setting(
+            cid,
+            chat_name=req.chat_name,
+            is_group=req.is_group,
+            auto_reply=req.auto_reply,
+            wait_seconds=req.wait_seconds,
+            history_limit=req.history_limit,
+            context=req.context,
+        )
+        return {"chat": saved}
+
+    @app.delete(
+        "/api/v1/inbox/whatsapp/chats/{chat_id:path}",
+        tags=["Inbox"],
+        summary="Reset custom auto-reply & context settings for a WhatsApp chat",
+    )
+    def whatsapp_delete_chat_setting(chat_id: str, _caller=Depends(require_scope("write"))):
+        cid = canonical_chat_id(chat_id)
+        deleted = orch.reg.delete_whatsapp_chat_setting(cid)
+        return {"deleted": deleted, "chat_id": cid}
+
+    @app.get(
         "/api/v1/inbox/whatsapp/unread",
         tags=["Inbox"],
-        summary="Show all unread WhatsApp messages (from WAHA store + incoming webhook log)",
+        summary="Show unread WhatsApp messages grouped by chat (with all unread messages + up to 100 chat context messages)",
     )
-    def whatsapp_unread_list(limit: int = Query(50, ge=1, le=200), _caller=Depends(require_scope("read"))):
-        local_items = orch.reg.list_unread_whatsapp_messages(limit=limit)
-        store_enabled = False
-        hint = ""
-        live_items = []
+    def whatsapp_unread_list(
+        limit: int = Query(60, ge=1, le=200),
+        history_limit: Optional[int] = Query(None, ge=1, le=100, description="Optional override for chat context length (1-100); defaults to each chat's saved setting"),
+        _caller=Depends(require_scope("read")),
+    ):
         try:
-            res = wa_fetch_unread(orch.reg, limit=limit)
-            store_enabled = bool(res.get("store_enabled"))
-            live_items = res.get("items") or []
-            hint = res.get("hint", "")
+            res = wa_fetch_unread(orch.reg, limit=limit, history_limit=history_limit)
         except WhatsAppError as e:
-            hint = str(e)
-
-        # Merge live store chats and local webhook unread messages (avoid duplicate chat_id if store has it)
-        seen_chats = {x["chat_id"] for x in live_items}
-        merged = list(live_items) + [x for x in local_items if x["chat_id"] not in seen_chats]
+            res = {"store_enabled": False, "items": [], "hint": str(e)}
+        items = res.get("items") or []
         return {
-            "store_enabled": store_enabled,
-            "unread_count": len(merged),
-            "messages": merged,
-            "hint": hint,
+            "store_enabled": bool(res.get("store_enabled")),
+            "unread_count": len(items),
+            "total_unread_messages": sum(int(x.get("unread_count") or 1) for x in items),
+            "messages": items,
+            "hint": res.get("hint", ""),
+            "sync": wa_sync.status_dict(),
         }
 
     @app.post(
-        "/api/v1/inbox/whatsapp/unread/{msg_id}/read",
+        "/api/v1/inbox/whatsapp/unread/{target_id:path}/read",
         tags=["Inbox"],
-        summary="Mark a logged unread WhatsApp message as read",
+        summary="Mark all unread messages in a WhatsApp chat (or single message ID) as read",
     )
-    def whatsapp_mark_read(msg_id: str, _caller=Depends(require_scope("write"))):
-        orch.reg.mark_whatsapp_read(msg_id=msg_id)
+    def whatsapp_mark_read(target_id: str, _caller=Depends(require_scope("write"))):
+        tid = target_id.strip()
+        if tid.startswith("wa_group_"):
+            tid = tid[len("wa_group_"):]
+        if "@" in tid:
+            mark_chat_read_waha(orch.reg, canonical_chat_id(tid))
+        else:
+            orch.reg.mark_whatsapp_read(msg_id=tid)
         return {"ok": True}
 
-    @app.post("/api/v1/inbox/whatsapp/manual-draft", tags=["Inbox"], summary="Generate an editable WhatsApp reply draft")
+    @app.post(
+        "/api/v1/inbox/whatsapp/manual-draft",
+        tags=["Inbox"],
+        summary="Generate a grouped WhatsApp reply draft reading all unread messages + up to 100 chat context messages",
+    )
     def whatsapp_manual_draft(req: WhatsAppManualDraftRequest, caller=Depends(require_scope("write"))):
         _check_user_quota(caller)
+        cid = canonical_chat_id(req.chat_id)
+        chat_cfg = orch.reg.get_whatsapp_chat_setting(cid)
+        eff_hl = max(1, min(100, int(req.history_limit or chat_cfg.get("history_limit") or WA_HISTORY_CONTEXT_LIMIT)))
+        local_grouped = orch.reg.list_grouped_unread_whatsapp()
+        l_msgs = (local_grouped.get(cid) or {}).get("messages") or []
+        ctx_data = wa_fetch_chat_context(
+            orch.reg,
+            cid,
+            chat_name=req.sender_name,
+            history_limit=eff_hl,
+            waha_unread_count=max(1, len(l_msgs)),
+            local_unread_msgs=l_msgs,
+        )
         start_usage_tracking()
         try:
             with op_lock:
                 drf = orch.draft_whatsapp_reply(
-                    sender_name=req.sender_name,
-                    chat_id=req.chat_id,
+                    sender_name=ctx_data["chat_name"] or req.sender_name,
+                    chat_id=cid,
+                    is_group=ctx_data["is_group"],
+                    unread_messages=ctx_data["unread_messages"],
+                    recent_history=ctx_data["recent_history"],
+                    history_limit=eff_hl,
                     incoming_text=req.incoming_text,
+                    external_id=f"wa_chat:{cid}",
+                    chat_context=chat_cfg.get("context") or "",
                     instructions=req.instructions,
                 )
+            orch.reg.mark_whatsapp_processed(cid)
         except Exception as e:
             finish_usage_tracking()
             raise HTTPException(status_code=502, detail=str(e))
@@ -1898,7 +1994,7 @@ def create_app(orch, api_token: Optional[str] = None) -> FastAPI:
     @app.post(
         "/api/v1/webhooks/whatsapp",
         tags=["Inbox"],
-        summary="Webhook receiver for WAHA incoming personal WhatsApp messages",
+        summary="Webhook receiver for WAHA incoming WhatsApp messages (buffers for 2-min grouped sync)",
     )
     async def whatsapp_webhook(request: Request):
         wa_cfg = get_whatsapp_config(orch.reg)
@@ -1914,38 +2010,45 @@ def create_app(orch, api_token: Optional[str] = None) -> FastAPI:
             return {"ignored": True, "event": event}
         if payload.get("fromMe"):
             return {"ignored": True, "reason": "fromMe"}
-        chat_id = str(payload.get("from") or payload.get("chatId") or "")
+
+        data_obj = payload.get("_data") or {}
+        key_meta = data_obj.get("key") if isinstance(data_obj, dict) else None
+        raw_chat = str(payload.get("from") or payload.get("chatId") or "")
+        chat_id = canonical_chat_id(raw_chat, key_meta=key_meta)
         text = str(payload.get("body") or "").strip()
+        if not text and payload.get("hasMedia"):
+            text = "[Media attachment]"
         if not chat_id or not text or chat_id.endswith("@broadcast") or chat_id == "status@broadcast":
             return {"ignored": True, "reason": "empty_or_broadcast"}
+
+        is_group = chat_id.endswith("@g.us")
         sender_name = str(
-            (payload.get("_data") or {}).get("notifyName")
+            data_obj.get("notifyName")
+            or data_obj.get("pushName")
             or payload.get("pushName")
             or chat_id.split("@")[0]
         )
+        chat_name = "" if is_group else sender_name
         ext_id = str(payload.get("id") or "")
-        orch.reg.save_whatsapp_message(ext_id, chat_id, sender_name, text)
-        try:
-            with op_lock:
-                drf = orch.draft_whatsapp_reply(
-                    sender_name=sender_name,
-                    chat_id=chat_id,
-                    incoming_text=text,
-                    external_id=ext_id,
-                )
-        except Exception as e:
-            # Save raw incoming message as a draft even if LLM fails so nothing is lost
-            drf = orch.reg.create_inbox_draft(
-                channel="whatsapp",
-                external_id=ext_id,
-                sender_name=sender_name,
-                sender_addr=chat_id,
-                subject="WhatsApp Message",
-                incoming_body=text,
-                draft_reply="",
-                summary=f"(Auto-draft failed: {e})",
-            )
-        return {"ok": True, "draft_id": drf["id"]}
+        msg_ts = payload.get("timestamp") or data_obj.get("messageTimestamp")
+        saved = orch.reg.save_whatsapp_message(
+            ext_id,
+            chat_id,
+            sender_name,
+            text,
+            chat_name=chat_name,
+            is_group=is_group,
+            timestamp=msg_ts,
+        )
+        # Buffered! The 2-minute WhatsAppSyncManager groups all unread messages + last 20 chat messages
+        # so senders have time to finish sending multiple messages before auto-replying or drafting.
+        return {
+            "ok": True,
+            "buffered": True,
+            "chat_id": chat_id,
+            "message_id": saved["id"],
+            "next_sync_at": wa_sync.next_sync_at,
+        }
 
     # --- Per-User Personal Bot & Notification Settings (Telegram + WhatsApp) ---
 
